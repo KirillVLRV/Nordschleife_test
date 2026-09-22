@@ -333,6 +333,12 @@ export default function App() {
   const [carConfigs, setCarConfigs] = useState<CarConfig[]>(CARS.map(c => ({ ...c })));
   const [isMuted, setIsMuted] = useState(false);
   const [showTelemetry, setShowTelemetry] = useState(true);
+  const [leftPanelCollapsed, setLeftPanelCollapsed] = useState(() => {
+    return localStorage.getItem('leftPanelCollapsed') === 'true';
+  });
+  const [rightPanelCollapsed, setRightPanelCollapsed] = useState(() => {
+    return localStorage.getItem('rightPanelCollapsed') === 'true';
+  });
 
   // Sync refs
   useEffect(() => { currentTimeRef.current = currentTime; }, [currentTime]);
@@ -342,6 +348,15 @@ export default function App() {
   useEffect(() => { trackRef.current = track; }, [track]);
 
   useEffect(() => { const t = setTimeout(() => setShowHint(false), 6000); return () => clearTimeout(t); }, []);
+
+  // Persist panel collapse state
+  useEffect(() => {
+    localStorage.setItem('leftPanelCollapsed', String(leftPanelCollapsed));
+  }, [leftPanelCollapsed]);
+
+  useEffect(() => {
+    localStorage.setItem('rightPanelCollapsed', String(rightPanelCollapsed));
+  }, [rightPanelCollapsed]);
 
   // Sound is OFF by default - only initialized when user drops audio file
 
@@ -440,7 +455,7 @@ export default function App() {
   }, []);
 
   // Car selection
-  const selectCar = useCallback((idx: number) => {
+  const selectCar = useCallback(async (idx: number) => {
     if (!trackRef.current) return;
     setSelectedCarIdx(idx);
     const timeFrac = simRef.current ? currentTimeRef.current / simRef.current.totalTime : 0;
@@ -450,9 +465,38 @@ export default function App() {
     const newTime = timeFrac * newSim.totalTime;
     currentTimeRef.current = newTime;
     setCurrentTime(newTime);
+    
     // Swap car mesh
     if (stateRef.current) {
-      // TODO: swap car mesh based on carConfigs[idx]
+      const car = carConfigs[idx];
+      
+      // Check if we have a cached custom model
+      if (car.customModelLoaded) {
+        const { getCachedModel, swapCarMesh } = await import('./scene');
+        const cachedModel = getCachedModel(stateRef.current, car.id);
+        if (cachedModel) {
+          swapCarMesh(stateRef.current, cachedModel.clone());
+          console.log(`[SelectCar] Swapped to custom model for ${car.name}`);
+          return;
+        }
+      }
+      
+      // Otherwise build procedural body
+      const { buildCar } = await import('./scene');
+      const { group: newCarGroup } = buildCar({
+        wheelbase: car.wheelbase,
+        trackWidth: car.trackWidth,
+        height: car.height,
+        roofHeight: car.height * 0.7,
+        length: car.length,
+        bodyType: car.bodyType,
+        paintColor: car.paintColor,
+        emissiveColor: car.emissiveColor,
+      });
+      
+      const { swapCarMesh } = await import('./scene');
+      swapCarMesh(stateRef.current, newCarGroup);
+      console.log(`[SelectCar] Swapped to procedural body for ${car.name}`);
     }
   }, [carConfigs]);
 
@@ -490,6 +534,13 @@ export default function App() {
   const jumpTo = useCallback((tv: number) => {
     currentTimeRef.current = tv; setCurrentTime(tv);
     if (stateRef.current) { updateScene(stateRef.current, tv); stateRef.current.renderer.render(stateRef.current.scene, stateRef.current.camera); }
+  }, []);
+
+  const handleSetCamera = useCallback((m: number) => { 
+    setCameraMode(m); 
+    if (stateRef.current) stateRef.current.cameraMode = m;
+    // Persist in URL hash
+    window.location.hash = `cam${m}`;
   }, []);
 
   // GPX file loader
@@ -575,7 +626,20 @@ export default function App() {
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <button onClick={() => setIsMuted(m => !m)} className={`${pillBtn} bg-cyan-900/80 hover:bg-cyan-800 text-cyan-300`}>
+            <button 
+              onClick={() => {
+                // Check if audio is loaded by checking if userAudio exists
+                const hasAudio = (soundSystem as any).userAudio !== null && (soundSystem as any).userAudio !== undefined;
+                if (!hasAudio) {
+                  setToast(lang === 'en' ? 'Drop an engine sound file' : 'Перетащи файл звука мотора');
+                  setTimeout(() => setToast(''), 3000);
+                } else {
+                  setIsMuted(m => !m);
+                }
+              }} 
+              className={`${pillBtn} bg-cyan-900/80 hover:bg-cyan-800 text-cyan-300`}
+              title={isMuted ? (lang === 'en' ? 'Unmute' : 'Включить звук') : (lang === 'en' ? 'Mute' : 'Выключить звук')}
+            >
               {isMuted ? '🔇' : '🔊'}
             </button>
             <button onClick={exportFrame} className={`${pillBtn} bg-cyan-900/80 hover:bg-cyan-800 text-cyan-300`}>
@@ -611,38 +675,70 @@ export default function App() {
         </div>
 
         {/* Left Panel: Corner List */}
-        <div className="absolute left-2 top-24 bottom-36 w-56 overflow-y-auto"
-          style={{ pointerEvents: 'auto', background: 'rgba(0,15,25,0.88)', border: '1px solid rgba(0,255,200,0.15)', borderRadius: '4px' }}>
-          <div className="p-2 border-b border-cyan-900 text-cyan-400 text-xs font-bold">
-            {lang === 'en' ? 'Corners' : 'Повороты'}
-          </div>
-          <div className="p-1">
-            {CORNER_SPECS.map((spec, idx) => (
-              <button
-                key={idx}
-                onClick={() => {
-                  if (!sim) return;
-                  const cornerTime = (idx / (CORNER_SPECS.length - 1)) * sim.totalTime;
-                  jumpTo(cornerTime);
-                }}
-                className={`w-full text-left px-2 py-1 text-xs rounded transition-colors ${
-                  currentCorner === spec.name 
-                    ? 'bg-amber-900/50 text-amber-200' 
-                    : 'text-cyan-400 hover:bg-cyan-900/30'
-                }`}
-              >
-                <span className="text-amber-500 mr-1">{idx + 1}.</span>
-                <span className="mr-1">{getCornerIcon(spec.character)}</span>
-                {lang === 'en' ? spec.name : spec.name}
-              </button>
-            ))}
-          </div>
+        <div 
+          className={`absolute left-2 top-24 bottom-36 transition-all duration-300 ${
+            leftPanelCollapsed ? 'w-8' : 'w-56'
+          }`}
+          style={{ pointerEvents: 'auto', background: 'rgba(0,15,25,0.88)', border: '1px solid rgba(0,255,200,0.15)', borderRadius: '4px' }}
+        >
+          {/* Collapse pill */}
+          <button
+            onClick={() => setLeftPanelCollapsed(!leftPanelCollapsed)}
+            className="absolute top-2 right-2 w-6 h-6 text-xs rounded bg-cyan-900/80 text-cyan-300 border border-cyan-700 hover:bg-cyan-800 z-10"
+            title={leftPanelCollapsed ? (lang === 'en' ? 'Expand' : 'Развернуть') : (lang === 'en' ? 'Collapse' : 'Свернуть')}
+          >
+            {leftPanelCollapsed ? '›' : '‹'}
+          </button>
+          
+          {!leftPanelCollapsed && (
+            <>
+              <div className="p-2 border-b border-cyan-900 text-cyan-400 text-xs font-bold">
+                {lang === 'en' ? 'Corners' : 'Повороты'}
+              </div>
+              <div className="p-1 overflow-y-auto" style={{ maxHeight: 'calc(100% - 40px)' }}>
+                {CORNER_SPECS.map((spec, idx) => (
+                  <button
+                    key={idx}
+                    onClick={() => {
+                      if (!sim) return;
+                      const cornerTime = (idx / (CORNER_SPECS.length - 1)) * sim.totalTime;
+                      jumpTo(cornerTime);
+                    }}
+                    className={`w-full text-left px-2 py-1 text-xs rounded transition-colors ${
+                      currentCorner === spec.name 
+                        ? 'bg-amber-900/50 text-amber-200' 
+                        : 'text-cyan-400 hover:bg-cyan-900/30'
+                    }`}
+                  >
+                    <span className="text-amber-500 mr-1">{idx + 1}.</span>
+                    <span className="mr-1">{getCornerIcon(spec.character)}</span>
+                    {lang === 'en' ? spec.name : spec.name}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
         </div>
 
         {/* Right Panel: Garage + Sliders */}
-        <div className="absolute right-2 top-24 bottom-36 w-64 overflow-y-auto"
-          style={{ pointerEvents: 'auto', background: 'rgba(0,15,25,0.88)', border: '1px solid rgba(0,255,200,0.15)', borderRadius: '4px' }}>
-          <div className="p-2 border-b border-cyan-900 text-cyan-400 text-xs font-bold">{lang === 'en' ? 'Garage' : 'Гараж'}</div>
+        <div 
+          className={`absolute right-2 top-24 bottom-36 transition-all duration-300 ${
+            rightPanelCollapsed ? 'w-8' : 'w-64'
+          }`}
+          style={{ pointerEvents: 'auto', background: 'rgba(0,15,25,0.88)', border: '1px solid rgba(0,255,200,0.15)', borderRadius: '4px' }}
+        >
+          {/* Collapse pill */}
+          <button
+            onClick={() => setRightPanelCollapsed(!rightPanelCollapsed)}
+            className="absolute top-2 left-2 w-6 h-6 text-xs rounded bg-cyan-900/80 text-cyan-300 border border-cyan-700 hover:bg-cyan-800 z-10"
+            title={rightPanelCollapsed ? (lang === 'en' ? 'Expand' : 'Развернуть') : (lang === 'en' ? 'Collapse' : 'Свернуть')}
+          >
+            {rightPanelCollapsed ? '‹' : '›'}
+          </button>
+          
+          {!rightPanelCollapsed && (
+            <>
+              <div className="p-2 border-b border-cyan-900 text-cyan-400 text-xs font-bold">{lang === 'en' ? 'Garage' : 'Гараж'}</div>
           <div className="p-2 grid grid-cols-2 gap-2">
             {carConfigs.map((car, idx) => (
               <div key={car.id} onClick={() => selectCar(idx)} className="cursor-pointer">
@@ -724,6 +820,8 @@ export default function App() {
               {lang === 'en' ? 'Wet Surface' : 'Мокрая поверхность'}
             </label>
           </div>
+            </>
+          )}
         </div>
 
         {/* Bottom */}
@@ -780,9 +878,38 @@ export default function App() {
           </div>
         )}
 
+        {/* Camera preset cluster - top left */}
+        <div className="absolute top-24 left-2 flex flex-col gap-1" style={{ pointerEvents: 'auto' }}>
+          {[1, 2, 3, 4, 5, 6].map(mode => (
+            <button
+              key={mode}
+              onClick={() => handleSetCamera(mode)}
+              title={tTooltip(mode, lang)}
+              className={`w-8 h-8 text-xs rounded border transition-colors ${
+                cameraMode === mode 
+                  ? 'bg-cyan-700 text-white border-cyan-500' 
+                  : 'bg-cyan-900/80 text-cyan-300 border-cyan-700 hover:bg-cyan-800'
+              }`}
+            >
+              {mode}
+            </button>
+          ))}
+          <button
+            onClick={() => {
+              if (stateRef.current) {
+                recenterCamera(stateRef.current);
+              }
+            }}
+            title={t('recenter', lang)}
+            className="w-8 h-8 text-xs rounded border bg-cyan-900/80 text-cyan-300 border-cyan-700 hover:bg-cyan-800"
+          >
+            ⊕
+          </button>
+        </div>
+
         {/* Build badge */}
         <div className="absolute bottom-2 right-2 text-[10px] text-cyan-600/40 pointer-events-none select-none">
-          build 2.2r2
+          build 2.3r1
         </div>
       </div>
     </div>

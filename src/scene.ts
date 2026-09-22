@@ -16,6 +16,7 @@ export interface SceneState {
   camera: THREE.PerspectiveCamera;
   controls: OrbitControls;
   carGroup: THREE.Group;
+  trackCarGroup: THREE.Group; // Dedicated group for current car mesh (for swapping)
   bodyMesh: THREE.Group;
   wheelMeshes: THREE.Group[];
   shadowDisc: THREE.Mesh;
@@ -45,6 +46,7 @@ export interface SceneState {
   visibility: { wheelLoads: boolean; cogSphere: boolean; bodyRoll: boolean; racingLine: boolean; photoPlates: boolean; elevationTint: boolean; minimap: boolean };
   signDisplayMode: 'nearest' | 'all' | 'selected';
   selectedCorner: number;
+  loadedModels: Map<string, THREE.Group>; // Cache of loaded GLTF scenes per car ID
 }
 
 // ============================================================
@@ -675,10 +677,15 @@ export function initScene(container: HTMLElement, track: TrackData, sim: SimData
       `[SelfTest] Canvas should receive pointer events. Got: ${el?.tagName}`);
   }, 500);
 
+  // Create dedicated track car group for mesh swapping
+  const trackCarGroup = new THREE.Group();
+  trackCarGroup.add(carGroup);
+  scene.add(trackCarGroup);
+
   // We need a ref for the dblclick handler
   const stateRef: SceneState = {
     renderer, scene, camera, controls,
-    carGroup, bodyMesh, wheelMeshes, shadowDisc,
+    carGroup, trackCarGroup, bodyMesh, wheelMeshes, shadowDisc,
     trackMesh: ribbon, curbMeshes: curbs, racingLineMesh,
     signSprites, signLeaders,
     cornerSigns: [], brakeMarkers: [], cornerPlates: [],
@@ -691,6 +698,7 @@ export function initScene(container: HTMLElement, track: TrackData, sim: SimData
     visibility: { wheelLoads: true, cogSphere: true, bodyRoll: true, racingLine: false, photoPlates: true, elevationTint: false, minimap: true },
     signDisplayMode: 'nearest',
     selectedCorner: 0,
+    loadedModels: new Map(),
   };
 
   return stateRef;
@@ -882,4 +890,41 @@ export function resizeScene(state: SceneState, w: number, h: number) {
   state.camera.aspect = w / h;
   state.camera.updateProjectionMatrix();
   state.renderer.setSize(w, h);
+}
+
+// ============================================================
+// Mesh Swap: Replace current car mesh with new one
+// ============================================================
+export function swapCarMesh(state: SceneState, newCarGroup: THREE.Group): void {
+  // Remove old car from trackCarGroup
+  while (state.trackCarGroup.children.length > 0) {
+    state.trackCarGroup.remove(state.trackCarGroup.children[0]);
+  }
+  
+  // Add new car
+  state.trackCarGroup.add(newCarGroup);
+  
+  // Update references
+  state.carGroup = newCarGroup;
+  
+  // Find body and wheels in new car
+  newCarGroup.traverse((child) => {
+    if (child.name === 'body') {
+      state.bodyMesh = child as THREE.Group;
+    }
+    if (child.name === 'wheels') {
+      state.wheelMeshes = (child as THREE.Group).children as THREE.Group[];
+    }
+  });
+  
+  console.log(`[MeshSwap] Swapped car mesh`);
+}
+
+// Cache and retrieve loaded models
+export function cacheLoadedModel(state: SceneState, carId: string, model: THREE.Group): void {
+  state.loadedModels.set(carId, model);
+}
+
+export function getCachedModel(state: SceneState, carId: string): THREE.Group | undefined {
+  return state.loadedModels.get(carId);
 }
