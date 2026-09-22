@@ -64,11 +64,24 @@ export const dict = {
     ru: 'Фото из Wikimedia Commons (CC BY-SA / Public Domain). Данные трассы: стилизованная Нюрбургринг Нордшляйфе.'
   },
   elevationLegend: { en: 'Elevation: 320m → 617m', ru: 'Высота: 320м → 617м' },
+  // Model-related strings
+  model: { en: 'model', ru: 'модель' },
+  unknown: { en: 'unknown', ru: 'неизвестно' },
+  findModel: { en: 'Find model', ru: 'Найти модель' },
+  rotateModel: { en: 'Rotate', ru: 'Повернуть' },
+  modelCredits: { en: 'Model Credits', ru: 'Авторы моделей' },
+  modelAuthor: { en: 'Author', ru: 'Автор' },
+  modelLicense: { en: 'License', ru: 'Лицензия' },
+  modelSource: { en: 'Source', ru: 'Источник' },
+  heavyModel: { en: 'Heavy model, may lag', ru: 'Тяжёлая модель, возможны задержки' },
+  enterModelInfo: { en: 'Enter model information', ru: 'Введите информацию о модели' },
+  skip: { en: 'Skip', ru: 'Пропустить' },
+  save: { en: 'Save', ru: 'Сохранить' },
 };
 
 export type DictKey = keyof typeof dict;
 
-export function t(key: 'title' | 'lap' | 'speed' | 'gear' | 'corner' | 'camera' | 'cameraHints' | 'massOverlay' | 'wheelLoads' | 'cogSphere' | 'bodyRoll' | 'play' | 'pause' | 'loadGpx' | 'roll' | 'pitch' | 'hint' | 'racingLine' | 'photoPlates' | 'elevationTint' | 'minimap' | 'signMode' | 'signNearest' | 'signAll' | 'signSelected' | 'recenter' | 'about' | 'aboutText' | 'elevationLegend', lang: Lang): string {
+export function t(key: 'title' | 'lap' | 'speed' | 'gear' | 'corner' | 'camera' | 'cameraHints' | 'massOverlay' | 'wheelLoads' | 'cogSphere' | 'bodyRoll' | 'play' | 'pause' | 'loadGpx' | 'roll' | 'pitch' | 'hint' | 'racingLine' | 'photoPlates' | 'elevationTint' | 'minimap' | 'signMode' | 'signNearest' | 'signAll' | 'signSelected' | 'recenter' | 'about' | 'aboutText' | 'elevationLegend' | 'model' | 'unknown' | 'findModel' | 'rotateModel' | 'modelCredits' | 'modelAuthor' | 'modelLicense' | 'modelSource' | 'heavyModel' | 'enterModelInfo' | 'skip' | 'save', lang: Lang): string {
   const val = dict[key];
   if (typeof val === 'string') return val;
   return '';

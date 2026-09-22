@@ -32,6 +32,12 @@ export interface CarConfig {
   gripMu: number;         // 0.6-1.6
   driverSkill: number;    // 0.7-1.0
   surfaceWet: boolean;
+  // Model metadata
+  modelAuthor?: string;
+  modelLicense?: string;
+  modelSource?: string;
+  modelRotation?: number; // Y-axis rotation in degrees
+  customModelLoaded?: boolean;
 }
 
 export const CARS: CarConfig[] = [
@@ -47,6 +53,8 @@ export const CARS: CarConfig[] = [
     brakeBias: 0.65, downforce: 0.3, aeroEfficiency: 0.80,
     massMultiplier: 1, cogHeightOffset: 0, powerMultiplier: 1,
     gripMu: 1.25, driverSkill: 0.92, surfaceWet: false,
+    modelAuthor: undefined, modelLicense: undefined, modelSource: undefined,
+    modelRotation: 0, customModelLoaded: false,
   },
   {
     id: 'defender',
@@ -60,6 +68,8 @@ export const CARS: CarConfig[] = [
     brakeBias: 0.55, downforce: 0.1, aeroEfficiency: 1.40,
     massMultiplier: 1, cogHeightOffset: 0, powerMultiplier: 1,
     gripMu: 1.10, driverSkill: 0.85, surfaceWet: false,
+    modelAuthor: undefined, modelLicense: undefined, modelSource: undefined,
+    modelRotation: 0, customModelLoaded: false,
   },
   {
     id: 'tesla',
@@ -73,6 +83,8 @@ export const CARS: CarConfig[] = [
     brakeBias: 0.60, downforce: 0.4, aeroEfficiency: 0.75,
     massMultiplier: 1, cogHeightOffset: 0, powerMultiplier: 1,
     gripMu: 1.30, driverSkill: 0.95, surfaceWet: false,
+    modelAuthor: undefined, modelLicense: undefined, modelSource: undefined,
+    modelRotation: 0, customModelLoaded: false,
   },
   {
     id: 'gt3',
@@ -86,6 +98,8 @@ export const CARS: CarConfig[] = [
     brakeBias: 0.68, downforce: 1.5, aeroEfficiency: 0.95,
     massMultiplier: 1, cogHeightOffset: 0, powerMultiplier: 1,
     gripMu: 1.40, driverSkill: 0.97, surfaceWet: false,
+    modelAuthor: undefined, modelLicense: undefined, modelSource: undefined,
+    modelRotation: 0, customModelLoaded: false,
   },
   {
     id: 'caterham',
@@ -99,6 +113,8 @@ export const CARS: CarConfig[] = [
     brakeBias: 0.70, downforce: 0.2, aeroEfficiency: 0.60,
     massMultiplier: 1, cogHeightOffset: 0, powerMultiplier: 1,
     gripMu: 1.35, driverSkill: 0.96, surfaceWet: false,
+    modelAuthor: undefined, modelLicense: undefined, modelSource: undefined,
+    modelRotation: 0, customModelLoaded: false,
   },
   {
     id: 'rs27',
@@ -112,8 +128,19 @@ export const CARS: CarConfig[] = [
     brakeBias: 0.60, downforce: 0.0, aeroEfficiency: 0.70,
     massMultiplier: 1, cogHeightOffset: 0, powerMultiplier: 1,
     gripMu: 1.15, driverSkill: 0.88, surfaceWet: false,
+    modelAuthor: undefined, modelLicense: undefined, modelSource: undefined,
+    modelRotation: 0, customModelLoaded: false,
   },
 ];
+
+export const SKETCHFAB_SEARCH_URLS: Record<string, string> = {
+  clio: 'https://sketchfab.com/search?q=renault%20clio%20rs&downloadable=true',
+  defender: 'https://sketchfab.com/search?q=land%20rover%20defender%20110&downloadable=true',
+  tesla: 'https://sketchfab.com/search?q=tesla%20model%203&downloadable=true',
+  gt3: 'https://sketchfab.com/search?q=porsche%20911%20gt3%20992&downloadable=true',
+  caterham: 'https://sketchfab.com/search?q=caterham%20seven&downloadable=true',
+  rs27: 'https://sketchfab.com/search?q=porsche%20911%20carrera%20rs%202.7&downloadable=true',
+};
 
 export function getEffectiveParams(car: CarConfig) {
   const mass = car.mass * car.massMultiplier;

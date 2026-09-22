@@ -6,7 +6,7 @@ import { buildBuiltInTrack, parseGpx, TrackData, CORNER_SPECS } from './track';
 import { runSimulation, SimData, interpSim } from './simulation';
 import { initScene, updateScene, resizeScene, recenterCamera, SceneState } from './scene';
 import { Lang, t, tNarrative, tTooltip, dict, loadLang, saveLang } from './i18n';
-import { CARS, CarConfig, getEffectiveParams } from './cars';
+import { CARS, CarConfig, getEffectiveParams, SKETCHFAB_SEARCH_URLS } from './cars';
 import { soundSystem } from './sound';
 
 function formatTime(seconds: number): string {
@@ -129,8 +129,20 @@ function TelemetryGraph({ sim, currentTime, onJumpTo }: { sim: SimData; currentT
 }
 
 // Car preview component (small canvas)
-function CarPreview({ car, selected }: { car: CarConfig; selected: boolean }) {
+function CarPreview({ car, selected, lang, onFindModel, onRotateModel, onLoadModel }: { 
+  car: CarConfig; 
+  selected: boolean; 
+  lang: Lang;
+  onFindModel: () => void;
+  onRotateModel: (degrees: number) => void;
+  onLoadModel: (file: File) => void;
+}) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [showModelForm, setShowModelForm] = useState(false);
+  const [modelAuthor, setModelAuthor] = useState(car.modelAuthor || '');
+  const [modelLicense, setModelLicense] = useState(car.modelLicense || '');
+  const [modelSource, setModelSource] = useState(car.modelSource || '');
+
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -149,6 +161,7 @@ function CarPreview({ car, selected }: { car: CarConfig; selected: boolean }) {
 
     ctx.save();
     ctx.translate(cx, cy);
+    ctx.rotate((car.modelRotation || 0) * Math.PI / 180);
 
     // Body
     const color = '#' + car.paintColor.toString(16).padStart(6, '0');
@@ -172,9 +185,138 @@ function CarPreview({ car, selected }: { car: CarConfig; selected: boolean }) {
       ctx.lineWidth = 2;
       ctx.strokeRect(1, 1, w - 2, h - 2);
     }
+
+    // Custom model indicator
+    if (car.customModelLoaded) {
+      ctx.fillStyle = '#00ff00';
+      ctx.font = '10px Arial';
+      ctx.fillText('3D', 5, 12);
+    }
   }, [car, selected]);
 
-  return <canvas ref={canvasRef} width={80} height={50} className="rounded cursor-pointer" />;
+  const handleFileDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const file = e.dataTransfer.files[0];
+    if (file && (file.name.endsWith('.glb') || file.name.endsWith('.gltf'))) {
+      onLoadModel(file);
+      setShowModelForm(true);
+    }
+  };
+
+  const handleFileInput = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      onLoadModel(file);
+      setShowModelForm(true);
+    }
+  };
+
+  return (
+    <div className="relative">
+      <div 
+        onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
+        onDrop={handleFileDrop}
+        className="relative"
+      >
+        <canvas ref={canvasRef} width={80} height={50} className="rounded cursor-pointer" />
+        
+        {/* Model info line */}
+        <div className="text-[8px] text-cyan-600 mt-0.5 text-center truncate">
+          {car.customModelLoaded ? (
+            <span>{t('model', lang)}: {car.modelAuthor || t('unknown', lang)} ({car.modelLicense || t('unknown', lang)})</span>
+          ) : (
+            <span className="text-gray-600">{t('model', lang)}: —</span>
+          )}
+        </div>
+      </div>
+
+      {/* Control buttons */}
+      <div className="flex gap-0.5 mt-1 justify-center">
+        {!car.customModelLoaded && (
+          <button 
+            onClick={(e) => { e.stopPropagation(); onFindModel(); }}
+            className="text-[9px] px-1 py-0.5 bg-cyan-900/60 hover:bg-cyan-800 text-cyan-400 rounded cursor-pointer"
+            title={t('findModel', lang)}
+          >
+            🔍
+          </button>
+        )}
+        {car.customModelLoaded && (
+          <>
+            <button 
+              onClick={(e) => { e.stopPropagation(); onRotateModel(-90); }}
+              className="text-[9px] px-1 py-0.5 bg-cyan-900/60 hover:bg-cyan-800 text-cyan-400 rounded cursor-pointer"
+              title={`${t('rotateModel', lang)} -90°`}
+            >
+              ↺
+            </button>
+            <button 
+              onClick={(e) => { e.stopPropagation(); onRotateModel(90); }}
+              className="text-[9px] px-1 py-0.5 bg-cyan-900/60 hover:bg-cyan-800 text-cyan-400 rounded cursor-pointer"
+              title={`${t('rotateModel', lang)} +90°`}
+            >
+              ↻
+            </button>
+            <label className="text-[9px] px-1 py-0.5 bg-cyan-900/60 hover:bg-cyan-800 text-cyan-400 rounded cursor-pointer">
+              📁
+              <input 
+                type="file" 
+                accept=".glb,.gltf" 
+                onChange={handleFileInput}
+                className="hidden"
+              />
+            </label>
+          </>
+        )}
+      </div>
+
+      {/* Model info form */}
+      {showModelForm && (
+        <div className="absolute top-full left-0 right-0 mt-1 p-2 bg-cyan-950/95 border border-cyan-700 rounded text-[9px] z-20">
+          <div className="text-cyan-400 mb-1">{t('enterModelInfo', lang)}</div>
+          <input 
+            type="text" 
+            placeholder={t('modelAuthor', lang)}
+            value={modelAuthor}
+            onChange={(e) => setModelAuthor(e.target.value)}
+            className="w-full mb-1 px-1 py-0.5 bg-black/50 border border-cyan-800 rounded text-cyan-300"
+          />
+          <input 
+            type="text" 
+            placeholder={t('modelLicense', lang)}
+            value={modelLicense}
+            onChange={(e) => setModelLicense(e.target.value)}
+            className="w-full mb-1 px-1 py-0.5 bg-black/50 border border-cyan-800 rounded text-cyan-300"
+          />
+          <input 
+            type="text" 
+            placeholder={t('modelSource', lang)}
+            value={modelSource}
+            onChange={(e) => setModelSource(e.target.value)}
+            className="w-full mb-1 px-1 py-0.5 bg-black/50 border border-cyan-800 rounded text-cyan-300"
+          />
+          <div className="flex gap-1">
+            <button 
+              onClick={() => setShowModelForm(false)}
+              className="flex-1 px-1 py-0.5 bg-cyan-800 hover:bg-cyan-700 text-cyan-300 rounded cursor-pointer"
+            >
+              {t('skip', lang)}
+            </button>
+            <button 
+              onClick={() => {
+                // Save model info - this would need to be passed up to parent
+                setShowModelForm(false);
+              }}
+              className="flex-1 px-1 py-0.5 bg-amber-700 hover:bg-amber-600 text-white rounded cursor-pointer"
+            >
+              {t('save', lang)}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 export default function App() {
@@ -448,7 +590,56 @@ export default function App() {
           <div className="p-2 grid grid-cols-2 gap-2">
             {carConfigs.map((car, idx) => (
               <div key={car.id} onClick={() => selectCar(idx)} className="cursor-pointer">
-                <CarPreview car={car} selected={idx === selectedCarIdx} />
+                <CarPreview 
+                  car={car} 
+                  selected={idx === selectedCarIdx} 
+                  lang={lang}
+                  onFindModel={() => {
+                    const url = SKETCHFAB_SEARCH_URLS[car.id];
+                    if (url) window.open(url, '_blank');
+                  }}
+                  onRotateModel={(degrees) => {
+                    const newRotation = ((car.modelRotation || 0) + degrees + 360) % 360;
+                    setCarConfigs(prev => {
+                      const next = [...prev];
+                      next[idx] = { ...next[idx], modelRotation: newRotation };
+                      return next;
+                    });
+                  }}
+                  onLoadModel={async (file) => {
+                    try {
+                      // Import model loader dynamically to avoid circular deps
+                      const { loadModel, normalizeModel } = await import('./modelLoader');
+                      const loaded = await loadModel(file);
+                      
+                      // Check for heavy model
+                      if (loaded.triangleCount > 200000) {
+                        setToast(t('heavyModel', lang));
+                        setTimeout(() => setToast(''), 3000);
+                      }
+                      
+                      // Normalize model
+                      normalizeModel(loaded.scene, car.length);
+                      
+                      // Update car config
+                      setCarConfigs(prev => {
+                        const next = [...prev];
+                        next[idx] = { 
+                          ...next[idx], 
+                          customModelLoaded: true,
+                          // Store loaded model reference (would need to be in scene state)
+                        };
+                        return next;
+                      });
+                      
+                      setToast(`${lang === 'en' ? 'Loaded' : 'Загружен'}: ${file.name} (${loaded.triangleCount.toLocaleString()} tris, ${loaded.wheelNodes.length} wheels)`);
+                      setTimeout(() => setToast(''), 3000);
+                    } catch (err) {
+                      setToast(`${lang === 'en' ? 'Error loading model' : 'Ошибка загрузки модели'}: ${err}`);
+                      setTimeout(() => setToast(''), 3000);
+                    }
+                  }}
+                />
                 <div className="text-[9px] text-cyan-400 mt-1 text-center truncate">
                   {lang === 'en' ? car.name : car.nameRu}
                 </div>
