@@ -63,6 +63,10 @@ export interface TrackData {
   // Racing line data
   racingLineOffsets: Float32Array; // lateral offset from centerline per sample
   racingLinePositions: Float32Array; // xyz of racing line
+  // Driver line data (humanized racing line)
+  driverLineOffsets: Float32Array; // lateral offset with driver variations
+  driverLinePositions: Float32Array; // xyz of driver line
+  driverCurvatures: Float32Array; // curvature of driver line
 }
 
 // ============================================================
@@ -232,6 +236,152 @@ function computeRacingLine(
 }
 
 // ============================================================
+// Driver Model v2: Humanized racing line with variations
+// ============================================================
+function computeDriverLine(
+  racingLineOffsets: Float32Array,
+  racingLinePositions: Float32Array,
+  centerPts: Float32Array,
+  numSamples: number,
+  trackHalfWidth: number,
+  cornerPositions: { name: string; index: number; fraction: number }[]
+): { offsets: Float32Array; positions: Float32Array; curvatures: Float32Array } {
+  const offsets = new Float32Array(numSamples);
+  const positions = new Float32Array(numSamples * 3);
+  const curvatures = new Float32Array(numSamples);
+  
+  // Seeded pseudo-random number generator (deterministic)
+  let seed = 12345;
+  function seededRandom() {
+    seed = (seed * 9301 + 49297) % 233280;
+    return seed / 233280;
+  }
+  
+  // Generate smoothed pseudo-random lateral offset (amplitude 0.25m, wavelength 40-80m)
+  const randomOffsets = new Float32Array(numSamples);
+  const sampleSpacing = centerPts[3] - centerPts[0] || 5; // approximate meters per sample
+  
+  for (let i = 0; i < numSamples; i++) {
+    // Wavelength varies between 40-80m
+    const wavelength = 40 + seededRandom() * 40;
+    const samplesPerWave = wavelength / sampleSpacing;
+    
+    // Generate smooth sinusoidal variation
+    const phase = (i / samplesPerWave) * Math.PI * 2;
+    const amplitude = 0.25; // meters
+    randomOffsets[i] = Math.sin(phase + seededRandom() * Math.PI * 2) * amplitude;
+  }
+  
+  // Smooth the random offsets with moving average
+  const smoothWindow = Math.max(3, Math.round(15 / sampleSpacing)); // 15m window
+  for (let i = 0; i < numSamples; i++) {
+    let sum = 0, count = 0;
+    for (let j = Math.max(0, i - smoothWindow); j <= Math.min(numSamples - 1, i + smoothWindow); j++) {
+      sum += randomOffsets[j];
+      count++;
+    }
+    randomOffsets[i] = sum / count;
+  }
+  
+  // Per-corner apex bias: +0.3m late apex at corners exiting onto long straights
+  // Identify corners before Döttinger Höhe and after Schwedenkreuz
+  const lateApexCorners = ['Schwedenkreuz', 'Hatzenbach']; // corners before long straights
+  const maxApexOffset = trackHalfWidth - 0.5; // clamp within track edges
+  
+  for (let i = 0; i < numSamples; i++) {
+    // Start with racing line offset
+    let driverOffset = racingLineOffsets[i];
+    
+    // Add pseudo-random variation
+    driverOffset += randomOffsets[i];
+    
+    // Apply late apex bias near specific corners
+    for (const corner of cornerPositions) {
+      if (lateApexCorners.includes(corner.name)) {
+        const cornerIdx = corner.index;
+        // Apply bias in a window around the corner exit (±50 samples ≈ ±250m)
+        const distFromCorner = Math.abs(i - cornerIdx);
+        if (distFromCorner < 50 && i > cornerIdx) {
+          // Late apex: offset toward outside of corner
+          const curvature = Math.abs(racingLineOffsets[i] - racingLineOffsets[Math.max(0, i - 5)]);
+          if (curvature > 0.1) {
+            const bias = 0.3 * (1 - distFromCorner / 50); // fade out over distance
+            driverOffset += Math.sign(racingLineOffsets[i]) * bias;
+          }
+        }
+      }
+    }
+    
+    // Clamp within track edges minus 0.5m
+    driverOffset = Math.max(-maxApexOffset, Math.min(maxApexOffset, driverOffset));
+    
+    offsets[i] = driverOffset;
+  }
+  
+  // Compute driver line positions
+  // Need to compute binormals for offset direction
+  const binormals = new Float32Array(numSamples * 3);
+  const tangents = new Float32Array(numSamples * 3);
+  
+  for (let i = 0; i < numSamples; i++) {
+    const prev = (i - 1 + numSamples) % numSamples;
+    const next = (i + 1) % numSamples;
+    const tx = centerPts[next * 3] - centerPts[prev * 3];
+    const ty = centerPts[next * 3 + 1] - centerPts[prev * 3 + 1];
+    const tz = centerPts[next * 3 + 2] - centerPts[prev * 3 + 2];
+    const len = Math.sqrt(tx * tx + ty * ty + tz * tz) || 1;
+    tangents[i * 3] = tx / len;
+    tangents[i * 3 + 1] = ty / len;
+    tangents[i * 3 + 2] = tz / len;
+    // Binormal = tangent × up
+    const bx = tz / len;
+    const bz = -tx / len;
+    const blen = Math.sqrt(bx * bx + bz * bz) || 1;
+    binormals[i * 3] = bx / blen;
+    binormals[i * 3 + 1] = 0;
+    binormals[i * 3 + 2] = bz / blen;
+  }
+  
+  for (let i = 0; i < numSamples; i++) {
+    positions[i * 3] = centerPts[i * 3] + binormals[i * 3] * offsets[i];
+    positions[i * 3 + 1] = centerPts[i * 3 + 1];
+    positions[i * 3 + 2] = centerPts[i * 3 + 2] + binormals[i * 3 + 2] * offsets[i];
+  }
+  
+  // Compute driver line curvature (sliding chord ~25m)
+  const chordSamples = Math.max(3, Math.round(25 / (centerPts[3] - centerPts[0] || 5)));
+  for (let i = 0; i < numSamples; i++) {
+    const prev = (i - chordSamples + numSamples) % numSamples;
+    const next = (i + chordSamples) % numSamples;
+    // Curvature from 3-point circle
+    const ax = positions[prev * 3], az = positions[prev * 3 + 2];
+    const bx = positions[i * 3], bz = positions[i * 3 + 2];
+    const cx = positions[next * 3], cz = positions[next * 3 + 2];
+    // 2D curvature in XZ plane
+    const d1x = bx - ax, d1z = bz - az;
+    const d2x = cx - bx, d2z = cz - bz;
+    const cross = d1x * d2z - d1z * d2x;
+    const l1 = Math.sqrt(d1x * d1x + d1z * d1z) || 1;
+    const l2 = Math.sqrt(d2x * d2x + d2z * d2z) || 1;
+    const l3x = cx - ax, l3z = cz - az;
+    const l3 = Math.sqrt(l3x * l3x + l3z * l3z) || 1;
+    const curvature = Math.abs(2 * cross / (l1 * l2 * l3));
+    curvatures[i] = Math.min(curvature, 1 / 15); // clamp
+  }
+  
+  // Calculate RMS offset from racing line
+  let sumSqDiff = 0;
+  for (let i = 0; i < numSamples; i++) {
+    const diff = offsets[i] - racingLineOffsets[i];
+    sumSqDiff += diff * diff;
+  }
+  const rmsOffset = Math.sqrt(sumSqDiff / numSamples);
+  console.log(`[Driver] RMS offset from racing line: ${rmsOffset.toFixed(3)}m`);
+  
+  return { offsets, positions, curvatures };
+}
+
+// ============================================================
 // Build from raw 3D points (used by both built-in and GPX)
 // ============================================================
 function buildFromPoints(rawPoints: THREE.Vector3[], targetLength: number | null, isGpx: boolean): TrackData {
@@ -375,6 +525,16 @@ function buildFromPoints(rawPoints: THREE.Vector3[], targetLength: number | null
   }
   const center = new THREE.Vector3().addVectors(min, max).multiplyScalar(0.5);
 
+  // Compute driver line (humanized racing line)
+  const { offsets: driverLineOffsets, positions: driverLinePositions, curvatures: driverCurvatures } = computeDriverLine(
+    racingLineOffsets,
+    racingLinePositions,
+    positions,
+    NUM_SAMPLES,
+    TRACK_WIDTH / 2,
+    cornerPositions
+  );
+
   console.log(`[Track] ${isGpx ? 'GPX' : 'Built-in'}: length=${(totalLen / 1000).toFixed(2)} km, samples=${NUM_SAMPLES}`);
 
   return {
@@ -384,6 +544,7 @@ function buildFromPoints(rawPoints: THREE.Vector3[], targetLength: number | null
     trackWidth: TRACK_WIDTH, isGpx,
     bounds: { min, max, center },
     racingLineOffsets, racingLinePositions,
+    driverLineOffsets, driverLinePositions, driverCurvatures,
   };
 }
 

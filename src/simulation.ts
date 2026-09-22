@@ -61,12 +61,14 @@ export function runSimulation(track: TrackData, car: CarConfig): SimData {
   const MAX_FRAMES = 80000;
 
   // Extract effective parameters from car config
-  const { mass: MASS, cogH: COG_H, power: MAX_POWER_KW, mu: MU, skill: DRIVER_SKILL, frontBias: FRONT_BIAS } = getEffectiveParams(car);
+  const { mass: MASS, cogH: COG_H, power: MAX_POWER_KW, mu: MU, skill: DRIVER_SKILL, frontBias: FRONT_BIAS, wheelbase: WHEELBASE, trackWidth: TRACK_W, rollDegPerG, aeroDownforce } = getEffectiveParams(car);
   const MAX_POWER = MAX_POWER_KW * 1000; // Convert kW to W
-  const WHEELBASE = car.wheelbase;
-  const TRACK_W = car.trackWidth;
   const MAX_BRAKE_G = 1.15 * DRIVER_SKILL;
-  const DRAG_CD_A = car.aeroEfficiency;
+  
+  // Calculate drag coefficient * area from car dimensions
+  // Frontal area approximation: width * height * 0.8 (accounting for shape)
+  const frontalArea = car.width * car.height * 0.8;
+  const DRAG_CD_A = 0.3 * frontalArea; // Typical Cd of 0.3 for modern cars
 
   // Gear ratios (simplified, could be car-specific)
   const GEAR_RATIOS = [0, 11.8, 7.7, 5.4, 4.1, 3.4, 2.8];
@@ -108,9 +110,10 @@ export function runSimulation(track: TrackData, car: CarConfig): SimData {
   const rollAngle = new Float32Array(MAX_FRAMES);
   const pitchAngle = new Float32Array(MAX_FRAMES);
 
-  // Use racing line curvature for target speeds
-  const useRacing = track.racingCurvatures && track.racingCurvatures.length > 0;
-  const curvatures = useRacing ? track.racingCurvatures : track.curvatures;
+  // Use driver line curvature for target speeds (humanized racing line)
+  const useDriver = track.driverCurvatures && track.driverCurvatures.length > 0;
+  const useRacing = !useDriver && track.racingCurvatures && track.racingCurvatures.length > 0;
+  const curvatures = useDriver ? track.driverCurvatures : (useRacing ? track.racingCurvatures : track.curvatures);
 
   function sampleTrack(arcPos: number) {
     const wrappedPos = ((arcPos % totalArcLen) + totalArcLen) % totalArcLen;
@@ -258,8 +261,10 @@ export function runSimulation(track: TrackData, car: CarConfig): SimData {
     const rl = Math.max(0, rearTotal / 2 - latTransfer * 0.4);
     const rr = Math.max(0, rearTotal / 2 + latTransfer * 0.4);
 
-    const rollAng = (latAccel * MASS * COG_H) / car.rollStiffness * (180 / Math.PI);
-    const pitchAng = (accel * MASS * COG_H) / car.pitchStiffness * (180 / Math.PI);
+    // Roll angle from lateral acceleration using rollDegPerG
+    const rollAng = (latAccel / G) * rollDegPerG;
+    // Pitch angle from longitudinal acceleration (typically stiffer than roll, so use 0.7x factor)
+    const pitchAng = (accel / G) * rollDegPerG * 0.7;
 
     const head = Math.atan2(newSample.tx, newSample.tz);
 
