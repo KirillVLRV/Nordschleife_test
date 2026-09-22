@@ -1,9 +1,9 @@
 // ============================================================
 // SECTION: Deterministic Precomputed Simulation
-// Renault Clio R.S. III: 1240kg, CoG 0.50m, 61/39 F/R, FWD, ~148kW
 // Uses racing-line curvature for target speeds
 // ============================================================
 import { TrackData } from './track';
+import { CarConfig, getEffectiveParams } from './cars';
 
 export interface SimData {
   numFrames: number;
@@ -31,18 +31,9 @@ export interface SimData {
   pitchAngle: Float32Array;
 }
 
-const MASS = 1240;
-const COG_H = 0.50;
-const WHEELBASE = 2.59;
-const TRACK_W = 1.53;
-const FRONT_BIAS = 0.61;
 const G = 9.81;
-const MU = 1.25;
-const MAX_BRAKE_G = 1.15;
-const DRAG_CD_A = 0.80;
 const RHO = 1.225;
 const ROLL_RESIST = 0.015;
-const MAX_POWER = 148000;
 
 const GEAR_RATIOS = [0, 11.8, 7.7, 5.4, 4.1, 3.4, 2.8];
 const WHEEL_R = 0.31;
@@ -63,11 +54,38 @@ const SHIFT_DOWN_RPM = 3800;
 const IDLE_RPM = 900;
 const MAX_RPM = 6800;
 
-export function runSimulation(track: TrackData): SimData {
+export function runSimulation(track: TrackData, car: CarConfig): SimData {
   const DT = 1 / 120;
   const N = track.numSamples;
   const totalArcLen = track.totalLength;
   const MAX_FRAMES = 80000;
+
+  // Extract effective parameters from car config
+  const { mass: MASS, cogH: COG_H, power: MAX_POWER_KW, mu: MU, skill: DRIVER_SKILL, frontBias: FRONT_BIAS } = getEffectiveParams(car);
+  const MAX_POWER = MAX_POWER_KW * 1000; // Convert kW to W
+  const WHEELBASE = car.wheelbase;
+  const TRACK_W = car.trackWidth;
+  const MAX_BRAKE_G = 1.15 * DRIVER_SKILL;
+  const DRAG_CD_A = car.aeroEfficiency;
+
+  // Gear ratios (simplified, could be car-specific)
+  const GEAR_RATIOS = [0, 11.8, 7.7, 5.4, 4.1, 3.4, 2.8];
+  const WHEEL_R = 0.31;
+  const SHIFT_UP_RPM = 6600;
+  const SHIFT_DOWN_RPM = 3800;
+  const IDLE_RPM = 900;
+  const MAX_RPM = 6800;
+
+  function effectiveRatio(gear: number): number {
+    return GEAR_RATIOS[gear] / WHEEL_R;
+  }
+
+  function engineTorque(rpm: number): number {
+    const norm = rpm / 7000;
+    if (norm < 0.15) return 180 * (norm / 0.15);
+    if (norm < 0.65) return 240;
+    return 240 * (1 - 0.4 * ((norm - 0.65) / 0.35));
+  }
 
   const t = new Float32Array(MAX_FRAMES);
   const s = new Float32Array(MAX_FRAMES);
@@ -116,7 +134,7 @@ export function runSimulation(track: TrackData): SimData {
   function cornerTargetSpeed(curv: number): number {
     if (curv < 0.004) return 65; // straight: power-limited ~234 km/h
     const radius = 1 / curv;
-    const v = Math.sqrt(MU * G * radius) * 0.90;
+    const v = Math.sqrt(MU * G * radius) * 0.90 * DRIVER_SKILL;
     return Math.min(v, 65);
   }
 
@@ -160,16 +178,12 @@ export function runSimulation(track: TrackData): SimData {
     // Trail-brake entry: blend brake and turn-in
     if (currentV > targetV + 0.5) {
       const vDiff = currentV - targetV;
-      // Trail-brake: reduce brake as we approach target, allowing some lateral grip
       brk = Math.min(1, vDiff / 8);
-      // Trail-brake shaping: less brake when close to target speed
       if (vDiff < 3) brk *= 0.5;
       thr = 0;
     } else if (currentV < targetV - 1) {
-      // Early-throttle exit: start applying throttle before reaching target
       const headroom = targetV - currentV;
       thr = Math.min(1, headroom / 6);
-      // Early throttle shaping: more throttle when well below target
       if (headroom > 10) thr = 1;
       brk = 0;
     } else {
@@ -193,8 +207,8 @@ export function runSimulation(track: TrackData): SimData {
     if (thr > 0) {
       const torque = engineTorque(currentRpm);
       engineForce = torque * effRatio * thr;
-      // Traction limit (FWD)
-      const maxTraction = MASS * G * 0.5;
+      // Traction limit based on drivetrain
+      const maxTraction = MASS * G * (car.drivetrain === 'FWD' ? 0.5 : car.drivetrain === 'RWD' ? 0.6 : 0.7);
       engineForce = Math.min(engineForce, maxTraction);
       // Power limit
       const power = engineForce * Math.max(currentV, 1);
@@ -244,10 +258,8 @@ export function runSimulation(track: TrackData): SimData {
     const rl = Math.max(0, rearTotal / 2 - latTransfer * 0.4);
     const rr = Math.max(0, rearTotal / 2 + latTransfer * 0.4);
 
-    const rollStiffness = 28000;
-    const rollAng = (latAccel * MASS * COG_H) / rollStiffness * (180 / Math.PI);
-    const pitchStiffness = 38000;
-    const pitchAng = (accel * MASS * COG_H) / pitchStiffness * (180 / Math.PI);
+    const rollAng = (latAccel * MASS * COG_H) / car.rollStiffness * (180 / Math.PI);
+    const pitchAng = (accel * MASS * COG_H) / car.pitchStiffness * (180 / Math.PI);
 
     const head = Math.atan2(newSample.tx, newSample.tz);
 
@@ -282,7 +294,7 @@ export function runSimulation(track: TrackData): SimData {
     if (speed[i] > maxSpeed) { maxSpeed = speed[i]; maxSpeedS = s[i]; }
   }
 
-  console.log(`[Sim] Lap time: ${Math.floor(lapTime / 60)}:${(lapTime % 60).toFixed(2).padStart(5, '0')} (${lapTime.toFixed(1)}s)`);
+  console.log(`[Sim] ${car.name}: Lap time: ${Math.floor(lapTime / 60)}:${(lapTime % 60).toFixed(2).padStart(5, '0')} (${lapTime.toFixed(1)}s)`);
   console.log(`[Sim] Top speed: ${(maxSpeed * 3.6).toFixed(0)} km/h at s=${(maxSpeedS / 1000).toFixed(1)}km`);
 
   const trim = (arr: Float32Array) => arr.slice(0, actualFrames);
