@@ -5,13 +5,12 @@ import * as THREE from 'three';
 
 export interface CornerSpec {
   name: string;
-  character: string; // 'right','left','kink','crest','chicane','straight'
-  radius: number;    // meters
-  elevation: number; // meters
+  character: string;
+  radius: number;
+  elevation: number;
   isNamed: boolean;
 }
 
-// Built-in stylized Nordschleife control spec
 export const CORNER_SPECS: CornerSpec[] = [
   { name: 'Start/Finish', character: 'straight', radius: 470, elevation: 470, isNamed: true },
   { name: 'Hatzenbach', character: 'kink', radius: 70, elevation: 465, isNamed: true },
@@ -44,67 +43,49 @@ export const CORNER_SPECS: CornerSpec[] = [
 ];
 
 export interface TrackData {
-  positions: Float32Array;    // xyz per sample
-  tangents: Float32Array;     // xyz per sample
-  normals: Float32Array;      // xyz per sample  
-  binormals: Float32Array;    // xyz per sample
-  curvatures: Float32Array;   // 1/r per sample
-  elevations: Float32Array;   // y per sample
-  arcLengths: Float32Array;   // cumulative arc length per sample
+  positions: Float32Array;
+  tangents: Float32Array;
+  normals: Float32Array;
+  binormals: Float32Array;
+  curvatures: Float32Array;
+  elevations: Float32Array;
+  arcLengths: Float32Array;
   totalLength: number;
   numSamples: number;
   cornerPositions: { name: string; index: number; fraction: number; pos: THREE.Vector3; dir: THREE.Vector3 }[];
   trackWidth: number;
   isGpx: boolean;
+  bounds: { min: THREE.Vector3; max: THREE.Vector3; center: THREE.Vector3 };
 }
 
-// Build a closed loop from corner specs using Catmull-Rom
 export function buildBuiltInTrack(): TrackData {
   const NUM_SAMPLES = 4500;
   const TRACK_WIDTH = 9;
-
-  // Generate control points from corner specs
-  // We'll create a 3D path that approximates the Nordschleife layout
   const controlPoints: THREE.Vector3[] = [];
-
-  // Create a roughly oval shape with variations to match the real track
-  // The Nordschleife is roughly 20.8km, we'll scale our control points
-  let totalAngle = 0;
   const numCorners = CORNER_SPECS.length;
-  
-  // Build control points approximating the Nordschleife layout
-  // The track has a complex shape - roughly a figure-8 with the long Döttinger Höhe straight
+
+  // Build control points in XZ plane (Y = elevation)
   for (let i = 0; i < numCorners; i++) {
     const spec = CORNER_SPECS[i];
     const fraction = i / numCorners;
     const angle = fraction * Math.PI * 2;
-    
-    // Base shape: elongated loop with variations
-    // Major radius ~3200m, minor ~1800m for ~20.8km perimeter
-    const a = 3200; // semi-major
-    const b = 1800; // semi-minor
-    
-    // Add complex undulations to match the real track character
-    // The Nordschleife has many direction changes
+
+    const a = 3200;
+    const b = 1800;
     const wobble1 = 500 * Math.sin(angle * 3 + 0.5);
     const wobble2 = 300 * Math.cos(angle * 5 + 1.2);
     const wobble3 = 200 * Math.sin(angle * 7);
-    
-    // Elongate one section for Döttinger Höhe (around fraction 0.85)
     const straightBoost = 600 * Math.exp(-Math.pow((fraction - 0.85) * 8, 2));
-    
     const r = 1 + (wobble1 + wobble2 + wobble3 + straightBoost) / (a + b);
-    
+
     const x = a * r * Math.cos(angle) + 350 * Math.sin(angle * 2.3);
     const z = b * r * Math.sin(angle) + 250 * Math.cos(angle * 3.1);
-    
+
     controlPoints.push(new THREE.Vector3(x, spec.elevation, z));
   }
 
-  // Create Catmull-Rom spline (closed)
   const curve = new THREE.CatmullRomCurve3(controlPoints, true, 'catmullrom', 0.5);
-  
-  // Sample the curve uniformly by arc length
+
   const positions = new Float32Array(NUM_SAMPLES * 3);
   const tangents = new Float32Array(NUM_SAMPLES * 3);
   const normals = new Float32Array(NUM_SAMPLES * 3);
@@ -113,14 +94,14 @@ export function buildBuiltInTrack(): TrackData {
   const elevations = new Float32Array(NUM_SAMPLES);
   const arcLengths = new Float32Array(NUM_SAMPLES);
 
-  // First pass: get raw points
+  // Sample curve
   const rawPoints: THREE.Vector3[] = [];
   for (let i = 0; i < NUM_SAMPLES; i++) {
     const t = i / NUM_SAMPLES;
     rawPoints.push(curve.getPointAt(t));
   }
 
-  // Compute arc lengths
+  // Arc lengths
   let totalLen = 0;
   arcLengths[0] = 0;
   for (let i = 1; i < NUM_SAMPLES; i++) {
@@ -131,24 +112,20 @@ export function buildBuiltInTrack(): TrackData {
     arcLengths[i] = totalLen;
   }
 
-  // Scale to target ~20.832 km
+  // Scale to ~20.832 km
   const targetLength = 20832;
   const scale = targetLength / totalLen;
 
-  // Apply scale and compute final data
   for (let i = 0; i < NUM_SAMPLES; i++) {
-    const p = rawPoints[i];
-    positions[i * 3] = p.x * scale;
-    positions[i * 3 + 1] = p.y;
-    positions[i * 3 + 2] = p.z * scale;
-    elevations[i] = p.y;
+    positions[i * 3] = rawPoints[i].x * scale;
+    positions[i * 3 + 1] = rawPoints[i].y; // elevation stays in meters
+    positions[i * 3 + 2] = rawPoints[i].z * scale;
+    elevations[i] = rawPoints[i].y;
     arcLengths[i] *= scale;
   }
-
-  // Recompute total length after scaling
   totalLen = arcLengths[NUM_SAMPLES - 1];
 
-  // Compute tangents via finite differences
+  // Compute tangents
   const _tmp = new THREE.Vector3();
   for (let i = 0; i < NUM_SAMPLES; i++) {
     const prev = (i - 1 + NUM_SAMPLES) % NUM_SAMPLES;
@@ -163,7 +140,7 @@ export function buildBuiltInTrack(): TrackData {
     tangents[i * 3 + 2] = _tmp.z;
   }
 
-  // Compute normals (approximate up = world Y, then cross with tangent)
+  // Compute binormals (horizontal perpendicular) and normals (up)
   const _up = new THREE.Vector3(0, 1, 0);
   const _tangent = new THREE.Vector3();
   const _normal = new THREE.Vector3();
@@ -171,12 +148,14 @@ export function buildBuiltInTrack(): TrackData {
 
   for (let i = 0; i < NUM_SAMPLES; i++) {
     _tangent.set(tangents[i * 3], tangents[i * 3 + 1], tangents[i * 3 + 2]);
+    // binormal = tangent × up (gives horizontal perpendicular)
     _binormal.crossVectors(_tangent, _up).normalize();
-    if (_binormal.length() < 0.001) {
+    if (_binormal.lengthSq() < 0.001) {
       _binormal.set(1, 0, 0);
     }
+    // normal = binormal × tangent (gives surface up)
     _normal.crossVectors(_binormal, _tangent).normalize();
-    
+
     normals[i * 3] = _normal.x;
     normals[i * 3 + 1] = _normal.y;
     normals[i * 3 + 2] = _normal.z;
@@ -185,7 +164,7 @@ export function buildBuiltInTrack(): TrackData {
     binormals[i * 3 + 2] = _binormal.z;
   }
 
-  // Compute curvatures from tangent changes (ds = actual arc-length step)
+  // Compute curvatures
   for (let i = 0; i < NUM_SAMPLES; i++) {
     const prev = (i - 1 + NUM_SAMPLES) % NUM_SAMPLES;
     const next = (i + 1) % NUM_SAMPLES;
@@ -195,11 +174,11 @@ export function buildBuiltInTrack(): TrackData {
       const dty = (tangents[next * 3 + 1] - tangents[prev * 3 + 1]) / ds;
       const dtz = (tangents[next * 3 + 2] - tangents[prev * 3 + 2]) / ds;
       const curvature = Math.sqrt(dtx * dtx + dty * dty + dtz * dtz);
-      curvatures[i] = Math.min(curvature, 1 / 20); // cap at r=20m
+      curvatures[i] = Math.min(curvature, 1 / 20);
     }
   }
 
-  // Compute corner positions (evenly distributed along the track)
+  // Corner positions
   const cornerPositions = CORNER_SPECS.map((spec, idx) => {
     const fraction = idx / (CORNER_SPECS.length - 1);
     const sampleIdx = Math.floor(fraction * (NUM_SAMPLES - 1));
@@ -220,23 +199,37 @@ export function buildBuiltInTrack(): TrackData {
     };
   });
 
+  // Compute bounds
+  const min = new THREE.Vector3(Infinity, Infinity, Infinity);
+  const max = new THREE.Vector3(-Infinity, -Infinity, -Infinity);
+  for (let i = 0; i < NUM_SAMPLES; i++) {
+    min.x = Math.min(min.x, positions[i * 3]);
+    min.y = Math.min(min.y, positions[i * 3 + 1]);
+    min.z = Math.min(min.z, positions[i * 3 + 2]);
+    max.x = Math.max(max.x, positions[i * 3]);
+    max.y = Math.max(max.y, positions[i * 3 + 1]);
+    max.z = Math.max(max.z, positions[i * 3 + 2]);
+  }
+  const center = new THREE.Vector3().addVectors(min, max).multiplyScalar(0.5);
+
+  console.log(`[Track] Built-in Nordschleife: length=${(totalLen/1000).toFixed(2)} km, samples=${NUM_SAMPLES}`);
+  console.log(`[Track] Bounds: min=(${min.x.toFixed(0)},${min.y.toFixed(0)},${min.z.toFixed(0)}) max=(${max.x.toFixed(0)},${max.y.toFixed(0)},${max.z.toFixed(0)})`);
+
   return {
     positions, tangents, normals, binormals, curvatures, elevations, arcLengths,
-    totalLength: totalLen, numSamples: NUM_SAMPLES, cornerPositions, trackWidth: TRACK_WIDTH, isGpx: false
+    totalLength: totalLen, numSamples: NUM_SAMPLES, cornerPositions,
+    trackWidth: TRACK_WIDTH, isGpx: false,
+    bounds: { min, max, center }
   };
 }
 
-// Parse GPX file and build track data
+// Parse GPX
 export function parseGpx(xmlText: string, builtIn: TrackData): { track: TrackData; pointCount: number; lengthKm: number } {
   const parser = new DOMParser();
   const doc = parser.parseFromString(xmlText, 'text/xml');
   const trkpts = doc.querySelectorAll('trkpt');
-  
-  if (trkpts.length < 10) {
-    throw new Error('GPX has too few points');
-  }
+  if (trkpts.length < 10) throw new Error('GPX has too few points');
 
-  // Extract lat/lon/ele
   const rawPoints: { lat: number; lon: number; ele: number }[] = [];
   trkpts.forEach(pt => {
     const lat = parseFloat(pt.getAttribute('lat') || '0');
@@ -246,17 +239,14 @@ export function parseGpx(xmlText: string, builtIn: TrackData): { track: TrackDat
     rawPoints.push({ lat, lon, ele });
   });
 
-  // Centroid for equirectangular projection
   let cLat = 0, cLon = 0;
   rawPoints.forEach(p => { cLat += p.lat; cLon += p.lon; });
   cLat /= rawPoints.length;
   cLon /= rawPoints.length;
-
   const cosLat = Math.cos(cLat * Math.PI / 180);
   const mPerDegLat = 111320;
   const mPerDegLon = 111320 * cosLat;
 
-  // Convert to local meters
   const localPoints: THREE.Vector3[] = [];
   let hasEle = false;
   rawPoints.forEach(p => {
@@ -267,20 +257,16 @@ export function parseGpx(xmlText: string, builtIn: TrackData): { track: TrackDat
     localPoints.push(new THREE.Vector3(x, y, z));
   });
 
-  // If no elevation data, use built-in profile stretched
   if (!hasEle) {
-    const builtInElevs = builtIn.elevations;
     const n = localPoints.length;
     for (let i = 0; i < n; i++) {
       const frac = i / (n - 1);
       const srcIdx = Math.floor(frac * (builtIn.numSamples - 1));
-      localPoints[i].y = builtInElevs[srcIdx];
+      localPoints[i].y = builtIn.elevations[srcIdx];
     }
   }
 
-  // Build Catmull-Rom curve (open, then close it)
   const curve = new THREE.CatmullRomCurve3(localPoints, true, 'catmullrom', 0.5);
-  
   const NUM_SAMPLES = Math.max(4000, rawPoints.length * 3);
   const positions = new Float32Array(NUM_SAMPLES * 3);
   const tangents = new Float32Array(NUM_SAMPLES * 3);
@@ -292,7 +278,6 @@ export function parseGpx(xmlText: string, builtIn: TrackData): { track: TrackDat
 
   let totalLen = 0;
   arcLengths[0] = 0;
-  
   for (let i = 0; i < NUM_SAMPLES; i++) {
     const t = i / NUM_SAMPLES;
     const p = curve.getPointAt(t);
@@ -300,7 +285,6 @@ export function parseGpx(xmlText: string, builtIn: TrackData): { track: TrackDat
     positions[i * 3 + 1] = p.y;
     positions[i * 3 + 2] = p.z;
     elevations[i] = p.y;
-    
     if (i > 0) {
       const dx = p.x - positions[(i - 1) * 3];
       const dy = p.y - positions[(i - 1) * 3 + 1];
@@ -310,7 +294,6 @@ export function parseGpx(xmlText: string, builtIn: TrackData): { track: TrackDat
     arcLengths[i] = totalLen;
   }
 
-  // Tangents
   const _up = new THREE.Vector3(0, 1, 0);
   const _tangent = new THREE.Vector3();
   const _normal = new THREE.Vector3();
@@ -327,9 +310,8 @@ export function parseGpx(xmlText: string, builtIn: TrackData): { track: TrackDat
     tangents[i * 3] = _tangent.x;
     tangents[i * 3 + 1] = _tangent.y;
     tangents[i * 3 + 2] = _tangent.z;
-
     _binormal.crossVectors(_tangent, _up).normalize();
-    if (_binormal.length() < 0.001) _binormal.set(1, 0, 0);
+    if (_binormal.lengthSq() < 0.001) _binormal.set(1, 0, 0);
     _normal.crossVectors(_binormal, _tangent).normalize();
     normals[i * 3] = _normal.x;
     normals[i * 3 + 1] = _normal.y;
@@ -339,7 +321,6 @@ export function parseGpx(xmlText: string, builtIn: TrackData): { track: TrackDat
     binormals[i * 3 + 2] = _binormal.z;
   }
 
-  // Curvatures
   for (let i = 0; i < NUM_SAMPLES; i++) {
     const prev = (i - 1 + NUM_SAMPLES) % NUM_SAMPLES;
     const next = (i + 1) % NUM_SAMPLES;
@@ -352,23 +333,32 @@ export function parseGpx(xmlText: string, builtIn: TrackData): { track: TrackDat
     }
   }
 
-  // Reposition named corners by fraction
   const cornerPositions = CORNER_SPECS.map((spec, idx) => {
     const fraction = idx / (CORNER_SPECS.length - 1);
     const sampleIdx = Math.floor(fraction * (NUM_SAMPLES - 1));
     return {
-      name: spec.name,
-      index: sampleIdx,
-      fraction,
+      name: spec.name, index: sampleIdx, fraction,
       pos: new THREE.Vector3(positions[sampleIdx * 3], positions[sampleIdx * 3 + 1], positions[sampleIdx * 3 + 2]),
       dir: new THREE.Vector3(tangents[sampleIdx * 3], tangents[sampleIdx * 3 + 1], tangents[sampleIdx * 3 + 2])
     };
   });
 
+  const min = new THREE.Vector3(Infinity, Infinity, Infinity);
+  const max = new THREE.Vector3(-Infinity, -Infinity, -Infinity);
+  for (let i = 0; i < NUM_SAMPLES; i++) {
+    min.x = Math.min(min.x, positions[i * 3]);
+    min.y = Math.min(min.y, positions[i * 3 + 1]);
+    min.z = Math.min(min.z, positions[i * 3 + 2]);
+    max.x = Math.max(max.x, positions[i * 3]);
+    max.y = Math.max(max.y, positions[i * 3 + 1]);
+    max.z = Math.max(max.z, positions[i * 3 + 2]);
+  }
+  const center = new THREE.Vector3().addVectors(min, max).multiplyScalar(0.5);
+
   const track: TrackData = {
     positions, tangents, normals, binormals, curvatures, elevations, arcLengths,
-    totalLength: totalLen, numSamples: NUM_SAMPLES, cornerPositions, trackWidth: 9, isGpx: true
+    totalLength: totalLen, numSamples: NUM_SAMPLES, cornerPositions,
+    trackWidth: 9, isGpx: true, bounds: { min, max, center }
   };
-
   return { track, pointCount: rawPoints.length, lengthKm: totalLen / 1000 };
 }

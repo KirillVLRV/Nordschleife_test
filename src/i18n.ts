@@ -3,7 +3,7 @@
 // ============================================================
 export type Lang = 'en' | 'ru';
 
-const dict = {
+export const dict = {
   title: { en: 'Nordschleife Mass Lab', ru: 'Нордшляйфе Mass Lab' },
   lap: { en: 'LAP', ru: 'КРУГ' },
   speed: { en: 'SPEED', ru: 'СКОРОСТЬ' },
@@ -14,17 +14,28 @@ const dict = {
     en: '1:Orbit 2:Chase 3:Hood 4:Top 5:TV 6:Free',
     ru: '1:Орбита 2:Преслед 3:Капот 4:Вид 5:ТВ 6:Свобод'
   },
+  cameraTooltips: {
+    1: { en: 'Orbit — rotate around car', ru: 'Орбита — вращение вокруг машины' },
+    2: { en: 'Chase — follow behind', ru: 'Преследование — следовать сзади' },
+    3: { en: 'Hood — driver view', ru: 'Капот — вид водителя' },
+    4: { en: 'Top-down — full track', ru: 'Вид сверху — вся трасса' },
+    5: { en: 'TV cam — corner view', ru: 'ТВ камера — вид с поворота' },
+    6: { en: 'Free fly — WASD+mouse', ru: 'Свободный полёт — WASD+мышь' },
+  },
   massOverlay: { en: 'Mass Overlay', ru: 'Визуализация массы' },
-  wheelLoads: { en: 'Wheel Loads', ru: 'Нагрузка колёс' },
-  cogSphere: { en: 'CoG Sphere', ru: 'Сфера ЦМ' },
-  bodyRoll: { en: 'Body Roll/Pitch', ru: 'Крен/Тангаж' },
+  wheelLoads: { en: 'Wheel loads', ru: 'Нагрузки колёс' },
+  cogSphere: { en: 'CoG', ru: 'Центр масс' },
+  bodyRoll: { en: 'Roll & pitch', ru: 'Крен и клев' },
   play: { en: 'Play', ru: 'Пуск' },
   pause: { en: 'Pause', ru: 'Пауза' },
   loadGpx: { en: 'Load GPX', ru: 'Загрузить GPX' },
   gpxLoaded: { en: 'GPX loaded: {n} points, {len} km', ru: 'GPX загружен: {n} точек, {len} км' },
-  builtInTrack: { en: 'Built-in Nordschleife', ru: 'Встроенная Нордшляйфе' },
   roll: { en: 'Roll', ru: 'Крен' },
   pitch: { en: 'Pitch', ru: 'Тангаж' },
+  hint: {
+    en: 'Left-drag: rotate · Wheel: zoom · Right-drag: pan',
+    ru: 'Левая кнопка — вращать · колесо — масштаб · ПКМ — панорама'
+  },
   narrative: {
     en: (name: string, brake: string, load: string, roll: string, grip: string, note: string) =>
       `${name}: braking ${brake}, ${load} load on front axle, roll ${roll}, front at ${grip} of grip limit — ${note}`,
@@ -41,7 +52,7 @@ const dict = {
 
 export type DictKey = keyof typeof dict;
 
-export function t(key: DictKey, lang: Lang): string {
+export function t(key: 'title' | 'lap' | 'speed' | 'gear' | 'corner' | 'camera' | 'cameraHints' | 'massOverlay' | 'wheelLoads' | 'cogSphere' | 'bodyRoll' | 'play' | 'pause' | 'loadGpx' | 'roll' | 'pitch' | 'hint', lang: Lang): string {
   const val = dict[key];
   if (typeof val === 'string') return val;
   return '';
@@ -51,4 +62,7 @@ export function tNarrative(lang: Lang, name: string, brake: string, load: string
   return dict.narrative[lang](name, brake, load, roll, grip, note);
 }
 
-export { dict };
+export function tTooltip(num: number, lang: Lang): string {
+  const entry = dict.cameraTooltips[num as keyof typeof dict.cameraTooltips];
+  return entry ? entry[lang] : '';
+}
