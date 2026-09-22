@@ -1,34 +1,25 @@
 // ============================================================
-// SECTION: Main App — Nordschleife Mass Lab
+// SECTION: Main App — Nordschleife Mass Lab v1.5
 // ============================================================
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { buildBuiltInTrack, parseGpx, TrackData, CORNER_SPECS } from './track';
 import { runSimulation, SimData, interpSim } from './simulation';
-import { initScene, updateScene, resizeScene, SceneState } from './scene';
-import { Lang, t, tNarrative, tTooltip, dict } from './i18n';
+import { initScene, updateScene, resizeScene, recenterCamera, SceneState } from './scene';
+import { Lang, t, tNarrative, tTooltip, dict, loadLang, saveLang } from './i18n';
 
-// ============================================================
-// Mini Graph Component
-// ============================================================
 function MiniGraph({ sim, currentTime, onJumpTo }: { sim: SimData; currentTime: number; onJumpTo: (t: number) => void }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
-    const w = canvas.width;
-    const h = canvas.height;
+    const w = canvas.width, h = canvas.height;
     ctx.clearRect(0, 0, w, h);
     ctx.fillStyle = 'rgba(0,15,25,0.8)';
     ctx.fillRect(0, 0, w, h);
-
-    // Speed graph
     let maxSpeed = 0;
-    for (let i = 0; i < sim.numFrames; i += 8) {
-      if (sim.speed[i] > maxSpeed) maxSpeed = sim.speed[i];
-    }
+    for (let i = 0; i < sim.numFrames; i += 8) if (sim.speed[i] > maxSpeed) maxSpeed = sim.speed[i];
     maxSpeed *= 1.1;
     ctx.beginPath();
     ctx.strokeStyle = 'rgba(255,180,0,0.7)';
@@ -39,8 +30,6 @@ function MiniGraph({ sim, currentTime, onJumpTo }: { sim: SimData; currentTime: 
       if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
     }
     ctx.stroke();
-
-    // Elevation graph
     let maxEle = -Infinity, minEle = Infinity;
     for (let i = 0; i < sim.numFrames; i += 8) {
       if (sim.posY[i] > maxEle) maxEle = sim.posY[i];
@@ -49,60 +38,117 @@ function MiniGraph({ sim, currentTime, onJumpTo }: { sim: SimData; currentTime: 
     const eleRange = maxEle - minEle || 1;
     ctx.beginPath();
     ctx.strokeStyle = 'rgba(0,255,200,0.4)';
-    ctx.lineWidth = 1;
     for (let i = 0; i < sim.numFrames; i += 6) {
       const x = (i / sim.numFrames) * w;
       const y = h - ((sim.posY[i] - minEle) / eleRange) * h * 0.5;
       if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
     }
     ctx.stroke();
-
-    // Current time indicator
     const tx = (currentTime / sim.totalTime) * w;
     ctx.beginPath();
     ctx.strokeStyle = 'rgba(255,255,255,0.8)';
-    ctx.lineWidth = 1;
-    ctx.moveTo(tx, 0);
-    ctx.lineTo(tx, h);
+    ctx.moveTo(tx, 0); ctx.lineTo(tx, h);
     ctx.stroke();
   }, [sim, currentTime]);
+  return (
+    <canvas ref={canvasRef} width={800} height={40} className="w-full cursor-pointer"
+      onClick={e => { const r = (e.target as HTMLCanvasElement).getBoundingClientRect(); onJumpTo(((e.clientX - r.left) / r.width) * sim.totalTime); }} />
+  );
+}
+
+// Minimap component
+function Minimap({ track, sim, currentTime, onJumpTo }: { track: TrackData; sim: SimData; currentTime: number; onJumpTo: (t: number) => void }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const w = canvas.width, h = canvas.height;
+    ctx.clearRect(0, 0, w, h);
+    ctx.fillStyle = 'rgba(0,15,25,0.85)';
+    ctx.fillRect(0, 0, w, h);
+
+    // Bounds
+    const b = track.bounds;
+    const pad = 10;
+    const sx = (w - pad * 2) / (b.max.x - b.min.x || 1);
+    const sy = (h - pad * 2) / (b.max.z - b.min.z || 1);
+    const scale = Math.min(sx, sy);
+    const ox = pad + ((w - pad * 2) - (b.max.x - b.min.x) * scale) / 2;
+    const oy = pad + ((h - pad * 2) - (b.max.z - b.min.z) * scale) / 2;
+    const toX = (x: number) => ox + (x - b.min.x) * scale;
+    const toY = (z: number) => oy + (z - b.min.z) * scale;
+
+    // Track outline
+    ctx.beginPath();
+    ctx.strokeStyle = '#3a3f46';
+    ctx.lineWidth = 2;
+    for (let i = 0; i < track.numSamples; i += 10) {
+      const x = toX(track.positions[i * 3]);
+      const y = toY(track.positions[i * 3 + 2]);
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    ctx.stroke();
+
+    // Corner ticks
+    ctx.fillStyle = '#00ccaa';
+    track.cornerPositions.forEach((cp, idx) => {
+      const x = toX(cp.pos.x);
+      const y = toY(cp.pos.z);
+      ctx.fillRect(x - 1.5, y - 1.5, 3, 3);
+    });
+
+    // Car dot
+    const data = interpSim(sim, currentTime);
+    const cx = toX(data.posX);
+    const cy = toY(data.posZ);
+    ctx.beginPath();
+    ctx.fillStyle = '#ff3333';
+    ctx.arc(cx, cy, 4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.fillStyle = '#ffaa00';
+    ctx.arc(cx, cy, 2, 0, Math.PI * 2);
+    ctx.fill();
+  }, [track, sim, currentTime]);
 
   return (
-    <canvas ref={canvasRef} width={800} height={40}
-      className="w-full cursor-pointer"
+    <canvas ref={canvasRef} width={200} height={200}
+      className="cursor-pointer rounded border border-cyan-800"
+      style={{ width: '160px', height: '160px' }}
       onClick={e => {
         const rect = (e.target as HTMLCanvasElement).getBoundingClientRect();
-        const frac = (e.clientX - rect.left) / rect.width;
-        onJumpTo(frac * sim.totalTime);
+        const mx = (e.clientX - rect.left) / rect.width;
+        const my = (e.clientY - rect.top) / rect.height;
+        // Find nearest track point by normalized position
+        const b = track.bounds;
+        const targetX = b.min.x + mx * (b.max.x - b.min.x);
+        const targetZ = b.min.z + my * (b.max.z - b.min.z);
+        let bestFrac = 0, bestDist = Infinity;
+        for (let i = 0; i < track.numSamples; i += 20) {
+          const dx = track.positions[i * 3] - targetX;
+          const dz = track.positions[i * 3 + 2] - targetZ;
+          const d = dx * dx + dz * dz;
+          if (d < bestDist) { bestDist = d; bestFrac = i / track.numSamples; }
+        }
+        onJumpTo(bestFrac * sim.totalTime);
       }}
     />
   );
 }
 
-// ============================================================
-// Helper functions
-// ============================================================
 function formatTime(seconds: number): string {
   const mins = Math.floor(seconds / 60);
   const secs = seconds % 60;
   return `${mins}:${secs < 10 ? '0' : ''}${secs.toFixed(2)}`;
 }
 
-function getCornerIcon(character: string): string {
-  switch (character) {
-    case 'right': return '↱';
-    case 'left': return '↰';
-    case 'kink': return '⚡';
-    case 'crest': return '⛰';
-    case 'chicane': return '⚡⚡';
-    case 'straight': return '→';
-    default: return '•';
-  }
+function getCornerIcon(c: string): string {
+  switch (c) { case 'right': return '↱'; case 'left': return '↰'; case 'kink': return '⚡'; case 'crest': return '⛰'; case 'chicane': return '⚡⚡'; case 'straight': return '→'; default: return '•'; }
 }
 
-// ============================================================
-// Main App Component
-// ============================================================
 export default function App() {
   const containerRef = useRef<HTMLDivElement>(null);
   const stateRef = useRef<SceneState | null>(null);
@@ -113,9 +159,8 @@ export default function App() {
   const playbackSpeedRef = useRef<number>(1);
   const simRef = useRef<SimData | null>(null);
   const trackRef = useRef<TrackData | null>(null);
-  const visibilityRef = useRef({ wheelLoads: true, cogSphere: true, bodyRoll: true });
 
-  const [lang, setLang] = useState<Lang>('en');
+  const [lang, setLangState] = useState<Lang>(loadLang());
   const [sim, setSim] = useState<SimData | null>(null);
   const [track, setTrack] = useState<TrackData | null>(null);
   const [currentTime, setCurrentTime] = useState(0);
@@ -123,11 +168,15 @@ export default function App() {
   const [playbackSpeed, setPlaybackSpeed] = useState(1);
   const [cameraMode, setCameraMode] = useState(1);
   const [currentCorner, setCurrentCorner] = useState('Start/Finish');
+  const [selectedCorner, setSelectedCorner] = useState(0);
   const [toast, setToast] = useState('');
   const [showHint, setShowHint] = useState(true);
+  const [showAbout, setShowAbout] = useState(false);
   const [visibility, setVisibility] = useState({
     wheelLoads: true, cogSphere: true, bodyRoll: true,
+    racingLine: false, photoPlates: true, elevationTint: false, minimap: true,
   });
+  const [signMode, setSignMode] = useState<'nearest' | 'all' | 'selected'>('nearest');
 
   // Sync refs
   useEffect(() => { currentTimeRef.current = currentTime; }, [currentTime]);
@@ -135,35 +184,30 @@ export default function App() {
   useEffect(() => { playbackSpeedRef.current = playbackSpeed; }, [playbackSpeed]);
   useEffect(() => { simRef.current = sim; }, [sim]);
   useEffect(() => { trackRef.current = track; }, [track]);
-  useEffect(() => { visibilityRef.current = visibility; }, [visibility]);
 
-  // Fade hint after 6 seconds
-  useEffect(() => {
-    const timer = setTimeout(() => setShowHint(false), 6000);
-    return () => clearTimeout(timer);
+  useEffect(() => { const t = setTimeout(() => setShowHint(false), 6000); return () => clearTimeout(t); }, []);
+
+  // Language persistence
+  const setLang = useCallback((l: Lang) => {
+    setLangState(l);
+    saveLang(l);
   }, []);
 
-  // Initialize scene
+  // Init
   useEffect(() => {
     const builtInTrack = buildBuiltInTrack();
     setTrack(builtInTrack);
     trackRef.current = builtInTrack;
-
     const simData = runSimulation(builtInTrack);
     setSim(simData);
     simRef.current = simData;
-
     if (containerRef.current) {
-      const sceneState = initScene(containerRef.current, builtInTrack, simData);
-      stateRef.current = sceneState;
-      updateScene(sceneState, 0, { wheelLoads: true, cogSphere: true, bodyRoll: true });
-      sceneState.renderer.render(sceneState.scene, sceneState.camera);
+      const ss = initScene(containerRef.current, builtInTrack, simData);
+      stateRef.current = ss;
+      updateScene(ss, 0);
+      ss.renderer.render(ss.scene, ss.camera);
     }
-
-    return () => {
-      if (animRef.current) cancelAnimationFrame(animRef.current);
-      if (stateRef.current) stateRef.current.renderer.dispose();
-    };
+    return () => { if (animRef.current) cancelAnimationFrame(animRef.current); if (stateRef.current) stateRef.current.renderer.dispose(); };
   }, []);
 
   // Animation loop
@@ -174,187 +218,131 @@ export default function App() {
       if (isPlayingRef.current && simRef.current) {
         const dt = lastTimeRef.current ? (timestamp - lastTimeRef.current) / 1000 : 0;
         lastTimeRef.current = timestamp;
-        const newTime = Math.min(currentTimeRef.current + dt * playbackSpeedRef.current, simRef.current.totalTime);
-        currentTimeRef.current = newTime;
-        setCurrentTime(newTime);
-        if (newTime >= simRef.current.totalTime) {
-          isPlayingRef.current = false;
-          setIsPlaying(false);
-        }
-      } else {
-        lastTimeRef.current = timestamp;
-      }
+        const nt = Math.min(currentTimeRef.current + dt * playbackSpeedRef.current, simRef.current.totalTime);
+        currentTimeRef.current = nt;
+        setCurrentTime(nt);
+        if (nt >= simRef.current.totalTime) { isPlayingRef.current = false; setIsPlaying(false); }
+      } else { lastTimeRef.current = timestamp; }
       animRef.current = requestAnimationFrame(animate);
     };
     animRef.current = requestAnimationFrame(animate);
     return () => { if (animRef.current) cancelAnimationFrame(animRef.current); };
   }, [sim]);
 
-  // Update scene when time or visibility changes
+  // Update scene
   useEffect(() => {
     if (!stateRef.current || !sim) return;
-    stateRef.current.currentTime = currentTime;
-    updateScene(stateRef.current, currentTime, visibility);
-    stateRef.current.renderer.render(stateRef.current.scene, stateRef.current.camera);
-
-    // Update current corner (throttled)
+    const st = stateRef.current;
+    st.currentTime = currentTime;
+    st.visibility = visibility;
+    st.signDisplayMode = signMode;
+    st.selectedCorner = selectedCorner;
+    updateScene(st, currentTime);
+    st.renderer.render(st.scene, st.camera);
     if (track) {
       const data = interpSim(sim, currentTime);
       let nearest = CORNER_SPECS[0].name;
       let minDist = Infinity;
+      let nearestIdx = 0;
       track.cornerPositions.forEach((cp, idx) => {
         const d = Math.abs(cp.fraction * track.totalLength - data.s);
-        if (d < minDist) { minDist = d; nearest = CORNER_SPECS[idx].name; }
+        if (d < minDist) { minDist = d; nearest = CORNER_SPECS[idx].name; nearestIdx = idx; }
       });
       setCurrentCorner(nearest);
     }
-  }, [currentTime, visibility, sim, track]);
+  }, [currentTime, visibility, signMode, selectedCorner, sim, track]);
 
   // Resize
   useEffect(() => {
-    const handleResize = () => {
-      if (containerRef.current && stateRef.current) {
-        resizeScene(stateRef.current, containerRef.current.clientWidth, containerRef.current.clientHeight);
-      }
-    };
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
+    const h = () => { if (containerRef.current && stateRef.current) resizeScene(stateRef.current, containerRef.current.clientWidth, containerRef.current.clientHeight); };
+    window.addEventListener('resize', h);
+    return () => window.removeEventListener('resize', h);
   }, []);
 
-  // Keyboard shortcuts
+  // Keyboard
   useEffect(() => {
-    const handleKey = (e: KeyboardEvent) => {
+    const hk = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement) return;
       switch (e.key) {
-        case ' ':
-          e.preventDefault();
-          setIsPlaying(p => !p);
-          break;
-        case 'ArrowLeft':
-          setCurrentTime(t => { const nt = Math.max(0, t - 1 / 120); currentTimeRef.current = nt; return nt; });
-          break;
-        case 'ArrowRight':
-          setCurrentTime(t => { const nt = sim ? Math.min(sim.totalTime, t + 1 / 120) : t; currentTimeRef.current = nt; return nt; });
-          break;
-        case '1': case '2': case '3': case '4': case '5': case '6':
-          setCameraMode(parseInt(e.key));
-          if (stateRef.current) stateRef.current.cameraMode = parseInt(e.key);
-          break;
-        case '[': {
-          const curIdx = CORNER_SPECS.findIndex(c => c.name === currentCorner);
-          if (curIdx > 0) jumpToCorner(curIdx - 1);
-          break;
-        }
-        case ']': {
-          const curIdx = CORNER_SPECS.findIndex(c => c.name === currentCorner);
-          if (curIdx < CORNER_SPECS.length - 1) jumpToCorner(curIdx + 1);
-          break;
-        }
+        case ' ': e.preventDefault(); setIsPlaying(p => !p); break;
+        case 'ArrowLeft': setCurrentTime(t => { const nt = Math.max(0, t - 1 / 120); currentTimeRef.current = nt; return nt; }); break;
+        case 'ArrowRight': setCurrentTime(t => { const nt = sim ? Math.min(sim.totalTime, t + 1 / 120) : t; currentTimeRef.current = nt; return nt; }); break;
+        case '1': case '2': case '3': case '4': case '5': case '6': setCameraMode(parseInt(e.key)); if (stateRef.current) stateRef.current.cameraMode = parseInt(e.key); break;
+        case 'r': case 'R': if (stateRef.current) recenterCamera(stateRef.current); break;
+        case '[': { const ci = CORNER_SPECS.findIndex(c => c.name === currentCorner); if (ci > 0) jumpToCorner(ci - 1); break; }
+        case ']': { const ci = CORNER_SPECS.findIndex(c => c.name === currentCorner); if (ci < CORNER_SPECS.length - 1) jumpToCorner(ci + 1); break; }
       }
     };
-    window.addEventListener('keydown', handleKey);
-    return () => window.removeEventListener('keydown', handleKey);
+    window.addEventListener('keydown', hk);
+    return () => window.removeEventListener('keydown', hk);
   }, [sim, currentCorner]);
 
-  // Free-fly WASD
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (stateRef.current && cameraMode === 6) stateRef.current.freeFlyState.keys.add(e.key.toLowerCase());
-    };
-    const handleKeyUp = (e: KeyboardEvent) => {
-      if (stateRef.current) stateRef.current.freeFlyState.keys.delete(e.key.toLowerCase());
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    window.addEventListener('keyup', handleKeyUp);
-    return () => { window.removeEventListener('keydown', handleKeyDown); window.removeEventListener('keyup', handleKeyUp); };
+    const kd = (e: KeyboardEvent) => { if (stateRef.current && cameraMode === 6) stateRef.current.freeFlyState.keys.add(e.key.toLowerCase()); };
+    const ku = (e: KeyboardEvent) => { if (stateRef.current) stateRef.current.freeFlyState.keys.delete(e.key.toLowerCase()); };
+    window.addEventListener('keydown', kd); window.addEventListener('keyup', ku);
+    return () => { window.removeEventListener('keydown', kd); window.removeEventListener('keyup', ku); };
   }, [cameraMode]);
 
-  // GPX drag & drop
+  // GPX
   useEffect(() => {
-    const handleDrop = (e: DragEvent) => {
-      e.preventDefault();
-      const file = e.dataTransfer?.files[0];
-      if (file && file.name.endsWith('.gpx')) loadGpxFile(file);
-    };
-    const handleDragOver = (e: DragEvent) => e.preventDefault();
-    window.addEventListener('drop', handleDrop);
-    window.addEventListener('dragover', handleDragOver);
-    return () => { window.removeEventListener('drop', handleDrop); window.removeEventListener('dragover', handleDragOver); };
+    const drop = (e: DragEvent) => { e.preventDefault(); const f = e.dataTransfer?.files[0]; if (f && f.name.endsWith('.gpx')) loadGpxFile(f); };
+    const drag = (e: DragEvent) => e.preventDefault();
+    window.addEventListener('drop', drop); window.addEventListener('dragover', drag);
+    return () => { window.removeEventListener('drop', drop); window.removeEventListener('dragover', drag); };
   }, [track]);
 
   const loadGpxFile = useCallback(async (file: File) => {
     if (!trackRef.current) return;
     const text = await file.text();
     try {
-      const { track: newTrack, pointCount, lengthKm } = parseGpx(text, trackRef.current);
-      const newSim = runSimulation(newTrack);
+      const { track: nt, pointCount, lengthKm } = parseGpx(text, trackRef.current);
+      const ns = runSimulation(nt);
       if (stateRef.current && containerRef.current) {
         stateRef.current.renderer.dispose();
         containerRef.current.innerHTML = '';
-        stateRef.current = initScene(containerRef.current, newTrack, newSim);
+        stateRef.current = initScene(containerRef.current, nt, ns);
       }
-      setTrack(newTrack);
-      trackRef.current = newTrack;
-      setSim(newSim);
-      simRef.current = newSim;
-      currentTimeRef.current = 0;
-      setCurrentTime(0);
+      setTrack(nt); trackRef.current = nt;
+      setSim(ns); simRef.current = ns;
+      currentTimeRef.current = 0; setCurrentTime(0);
       setToast(dict.gpxLoaded[lang].replace('{n}', pointCount.toString()).replace('{len}', lengthKm.toFixed(1)));
       setTimeout(() => setToast(''), 4000);
-    } catch (err) {
-      setToast(`Error: ${err}`);
-      setTimeout(() => setToast(''), 4000);
-    }
+    } catch (err) { setToast(`Error: ${err}`); setTimeout(() => setToast(''), 4000); }
   }, [lang]);
 
   const handleLoadGpx = useCallback(() => {
     const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = '.gpx';
-    input.onchange = (e) => {
-      const file = (e.target as HTMLInputElement).files?.[0];
-      if (file) loadGpxFile(file);
-    };
+    input.type = 'file'; input.accept = '.gpx';
+    input.onchange = (e) => { const f = (e.target as HTMLInputElement).files?.[0]; if (f) loadGpxFile(f); };
     input.click();
   }, [loadGpxFile]);
 
-  // CORNER CLICK: jump time AND force immediate scene update
   const jumpToCorner = useCallback((idx: number) => {
     if (!simRef.current || !trackRef.current) return;
     const cp = trackRef.current.cornerPositions[idx];
-    const targetTime = cp.fraction * simRef.current.totalTime;
-    currentTimeRef.current = targetTime;
-    setCurrentTime(targetTime);
-    // Force immediate scene update so car jumps even while paused
+    const tt = cp.fraction * simRef.current.totalTime;
+    currentTimeRef.current = tt; setCurrentTime(tt);
+    setSelectedCorner(idx);
     if (stateRef.current) {
-      updateScene(stateRef.current, targetTime, visibilityRef.current);
+      stateRef.current.selectedCorner = idx;
+      updateScene(stateRef.current, tt);
       stateRef.current.renderer.render(stateRef.current.scene, stateRef.current.camera);
     }
   }, []);
 
-  const jumpTo = useCallback((timeVal: number) => {
-    currentTimeRef.current = timeVal;
-    setCurrentTime(timeVal);
-    if (stateRef.current) {
-      updateScene(stateRef.current, timeVal, visibilityRef.current);
-      stateRef.current.renderer.render(stateRef.current.scene, stateRef.current.camera);
-    }
+  const jumpTo = useCallback((tv: number) => {
+    currentTimeRef.current = tv; setCurrentTime(tv);
+    if (stateRef.current) { updateScene(stateRef.current, tv); stateRef.current.renderer.render(stateRef.current.scene, stateRef.current.camera); }
   }, []);
 
-  const toggleVisibility = useCallback((key: string) => {
-    setVisibility(v => {
-      const nv = { ...v, [key]: !v[key as keyof typeof v] };
-      visibilityRef.current = nv;
-      return nv;
-    });
+  const toggleVis = useCallback((key: string) => {
+    setVisibility(v => ({ ...v, [key]: !v[key as keyof typeof v] }));
   }, []);
 
-  const handleSetCamera = useCallback((m: number) => {
-    setCameraMode(m);
-    if (stateRef.current) stateRef.current.cameraMode = m;
-  }, []);
+  const handleSetCamera = useCallback((m: number) => { setCameraMode(m); if (stateRef.current) stateRef.current.cameraMode = m; }, []);
 
-  // Compute narrative
+  // Narrative
   const data = sim ? interpSim(sim, currentTime) : null;
   const speedKmh = data ? (data.speed * 3.6).toFixed(0) : '0';
   const gearStr = data ? data.gear.toFixed(0) : '-';
@@ -377,14 +365,13 @@ export default function App() {
     narrative = tNarrative(lang, currentCorner, brakeStr, `${frontLoad}%`, rollStr, `${gripPct}%`, note);
   }
 
+  const pillBtn = "px-3 py-1.5 text-xs rounded border border-cyan-700 cursor-pointer transition-colors";
+
   return (
     <div className="w-screen h-screen overflow-hidden bg-black relative">
-      {/* Three.js Canvas — pointer events enabled here */}
       <div ref={containerRef} className="absolute inset-0" style={{ zIndex: 0 }} />
 
-      {/* HUD Overlay — pointer-events:none so mouse passes through to canvas */}
       <div className="absolute inset-0" style={{ pointerEvents: 'none', zIndex: 10 }}>
-
         {/* Top Bar */}
         <div className="absolute top-0 left-0 right-0 flex items-center justify-between px-4 py-2"
           style={{ pointerEvents: 'auto', background: 'linear-gradient(180deg, rgba(0,20,30,0.92) 0%, rgba(0,10,20,0.75) 100%)', borderBottom: '1px solid rgba(0,255,200,0.2)' }}>
@@ -397,29 +384,45 @@ export default function App() {
             </div>
           </div>
           <div className="flex items-center gap-3">
-            {/* G-meter */}
             <div className="relative w-12 h-12 border border-cyan-800 rounded-full flex items-center justify-center">
-              <div className="absolute w-1 h-4 bg-red-500 rounded" style={{
-                transform: `rotate(${data ? (data.aLat / 9.81) * 25 : 0}deg) translateY(-4px)`,
-                transformOrigin: 'bottom center'
-              }} />
-              <div className="absolute h-1 w-4 bg-green-500 rounded" style={{
-                transform: `translateX(${data ? (data.aLong / 9.81) * 8 : 0}px)`,
-              }} />
+              <div className="absolute w-1 h-4 bg-red-500 rounded" style={{ transform: `rotate(${data ? (data.aLat / 9.81) * 25 : 0}deg) translateY(-4px)`, transformOrigin: 'bottom center' }} />
+              <div className="absolute h-1 w-4 bg-green-500 rounded" style={{ transform: `translateX(${data ? (data.aLong / 9.81) * 8 : 0}px)` }} />
               <span className="text-[8px] text-cyan-600 absolute bottom-0">G</span>
             </div>
             <span className="text-cyan-200 text-lg font-bold">{currentCorner}</span>
           </div>
         </div>
 
-        {/* Left Panel: Corner List */}
-        <div className="absolute left-2 top-16 bottom-32 w-52 overflow-y-auto"
+        {/* Top-right pills */}
+        <div className="absolute top-14 right-2 flex gap-1.5" style={{ pointerEvents: 'auto' }}>
+          <button onClick={() => setLang(lang === 'en' ? 'ru' : 'en')}
+            className={`${pillBtn} bg-cyan-900/80 hover:bg-cyan-800 text-cyan-300`}>
+            {lang === 'en' ? 'RU' : 'EN'}
+          </button>
+          <button onClick={handleLoadGpx}
+            className={`${pillBtn} bg-cyan-900/80 hover:bg-cyan-800 text-cyan-300 flex items-center gap-1`}>
+            <span>↓</span> {t('loadGpx', lang)}
+          </button>
+          <button onClick={() => { if (stateRef.current) recenterCamera(stateRef.current); }}
+            className={`${pillBtn} bg-cyan-900/80 hover:bg-cyan-800 text-cyan-300`}
+            title={t('recenter', lang)}>
+            ⊕
+          </button>
+          <button onClick={() => setShowAbout(a => !a)}
+            className={`${pillBtn} bg-cyan-900/80 hover:bg-cyan-800 text-cyan-300`}>
+            ?
+          </button>
+        </div>
+
+        {/* Left Panel */}
+        <div className="absolute left-2 top-20 bottom-36 w-52 overflow-y-auto"
           style={{ pointerEvents: 'auto', background: 'rgba(0,15,25,0.88)', border: '1px solid rgba(0,255,200,0.15)', borderRadius: '4px' }}>
           <div className="p-2 border-b border-cyan-900 text-cyan-400 text-xs font-bold">{t('corner', lang)}</div>
           <div className="p-1">
             {CORNER_SPECS.map((spec, idx) => (
               <button key={idx}
                 className={`w-full text-left px-2 py-1 text-xs rounded transition-colors ${
+                  selectedCorner === idx ? 'bg-amber-900/50 text-amber-200' :
                   currentCorner === spec.name ? 'bg-cyan-900/60 text-cyan-100' : 'text-cyan-500 hover:bg-cyan-900/30'
                 }`}
                 onClick={() => jumpToCorner(idx)}>
@@ -431,20 +434,17 @@ export default function App() {
           </div>
         </div>
 
-        {/* Right Panel: Camera + Visibility */}
-        <div className="absolute right-2 top-16 w-48"
+        {/* Right Panel */}
+        <div className="absolute right-2 top-24 w-52"
           style={{ pointerEvents: 'auto', background: 'rgba(0,15,25,0.88)', border: '1px solid rgba(0,255,200,0.15)', borderRadius: '4px' }}>
           <div className="p-2 border-b border-cyan-900">
             <div className="text-cyan-400 text-xs font-bold mb-1">{t('camera', lang)}</div>
             <div className="text-[10px] text-cyan-600 mb-2">{t('cameraHints', lang)}</div>
             <div className="flex flex-wrap gap-1">
               {[1, 2, 3, 4, 5, 6].map(m => (
-                <button key={m}
-                  title={tTooltip(m, lang)}
+                <button key={m} title={tTooltip(m, lang)}
                   className={`px-2 py-0.5 text-xs rounded ${cameraMode === m ? 'bg-cyan-700 text-white' : 'bg-cyan-900/50 text-cyan-400 hover:bg-cyan-800'}`}
-                  onClick={() => handleSetCamera(m)}>
-                  {m}
-                </button>
+                  onClick={() => handleSetCamera(m)}>{m}</button>
               ))}
             </div>
           </div>
@@ -456,13 +456,35 @@ export default function App() {
               { key: 'bodyRoll', label: t('bodyRoll', lang) },
             ].map(item => (
               <label key={item.key} className="flex items-center gap-2 text-xs text-cyan-400 py-0.5 cursor-pointer">
-                <input type="checkbox"
-                  checked={visibility[item.key as keyof typeof visibility]}
-                  onChange={() => toggleVisibility(item.key)}
-                  className="accent-cyan-500" />
+                <input type="checkbox" checked={visibility[item.key as keyof typeof visibility]} onChange={() => toggleVis(item.key)} className="accent-cyan-500" />
                 {item.label}
               </label>
             ))}
+          </div>
+          <div className="p-2 border-b border-cyan-900">
+            <div className="text-cyan-400 text-xs font-bold mb-1">Layers</div>
+            {[
+              { key: 'racingLine', label: t('racingLine', lang) },
+              { key: 'photoPlates', label: t('photoPlates', lang) },
+              { key: 'elevationTint', label: t('elevationTint', lang) },
+            ].map(item => (
+              <label key={item.key} className="flex items-center gap-2 text-xs text-cyan-400 py-0.5 cursor-pointer">
+                <input type="checkbox" checked={visibility[item.key as keyof typeof visibility]} onChange={() => toggleVis(item.key)} className="accent-cyan-500" />
+                {item.label}
+              </label>
+            ))}
+          </div>
+          <div className="p-2 border-b border-cyan-900">
+            <div className="text-cyan-400 text-xs font-bold mb-1">{t('signMode', lang)}</div>
+            <div className="flex gap-1">
+              {(['nearest', 'all', 'selected'] as const).map(m => (
+                <button key={m}
+                  className={`px-2 py-0.5 text-xs rounded ${signMode === m ? 'bg-cyan-700 text-white' : 'bg-cyan-900/50 text-cyan-400 hover:bg-cyan-800'}`}
+                  onClick={() => setSignMode(m)}>
+                  {t(`sign${m.charAt(0).toUpperCase() + m.slice(1)}` as 'signNearest' | 'signAll' | 'signSelected', lang)}
+                </button>
+              ))}
+            </div>
           </div>
           {data && (
             <div className="p-2 text-xs text-cyan-500">
@@ -472,44 +494,38 @@ export default function App() {
           )}
         </div>
 
-        {/* Bottom: Scrubber + Transport */}
+        {/* Minimap */}
+        {visibility.minimap && track && sim && (
+          <div className="absolute left-2 bottom-36" style={{ pointerEvents: 'auto' }}>
+            <Minimap track={track} sim={sim} currentTime={currentTime} onJumpTo={jumpTo} />
+          </div>
+        )}
+
+        {/* Bottom */}
         <div className="absolute bottom-0 left-0 right-0"
           style={{ pointerEvents: 'auto', background: 'linear-gradient(0deg, rgba(0,20,30,0.95) 0%, rgba(0,10,20,0.8) 100%)', borderTop: '1px solid rgba(0,255,200,0.2)' }}>
           {sim && <MiniGraph sim={sim} currentTime={currentTime} onJumpTo={jumpTo} />}
           <div className="px-4 py-1">
             <input type="range" min={0} max={sim?.totalTime || 100} step={1 / 120}
-              value={currentTime}
-              onChange={e => jumpTo(parseFloat(e.target.value))}
+              value={currentTime} onChange={e => jumpTo(parseFloat(e.target.value))}
               className="w-full h-2 cursor-pointer" />
             {sim && (
               <div className="relative h-3 mt-0.5">
-                {CORNER_SPECS.map((_, idx) => {
-                  const frac = idx / (CORNER_SPECS.length - 1);
-                  return (
-                    <div key={idx} className="absolute top-0 w-px h-2 bg-cyan-700"
-                      style={{ left: `${frac * 100}%` }}
-                      title={CORNER_SPECS[idx].name} />
-                  );
-                })}
+                {CORNER_SPECS.map((_, idx) => (
+                  <div key={idx} className={`absolute top-0 w-px h-2 ${selectedCorner === idx ? 'bg-amber-500' : 'bg-cyan-700'}`}
+                    style={{ left: `${(idx / (CORNER_SPECS.length - 1)) * 100}%` }} title={CORNER_SPECS[idx].name} />
+                ))}
               </div>
             )}
           </div>
           <div className="flex items-center justify-center gap-3 pb-2 px-4">
-            <button onClick={() => jumpTo(Math.max(0, currentTime - 1 / 120))}
-              className="text-cyan-400 hover:text-cyan-200 text-sm px-2">◀</button>
-            <button onClick={() => setIsPlaying(p => !p)}
-              className="bg-cyan-800 hover:bg-cyan-700 text-white px-4 py-1 rounded text-sm font-bold">
-              {isPlaying ? '⏸' : '▶'}
-            </button>
-            <button onClick={() => jumpTo(Math.min(sim?.totalTime || 0, currentTime + 1 / 120))}
-              className="text-cyan-400 hover:text-cyan-200 text-sm px-2">▶</button>
+            <button onClick={() => jumpTo(Math.max(0, currentTime - 1 / 120))} className="text-cyan-400 hover:text-cyan-200 text-sm px-2">◀</button>
+            <button onClick={() => setIsPlaying(p => !p)} className="bg-cyan-800 hover:bg-cyan-700 text-white px-4 py-1 rounded text-sm font-bold">{isPlaying ? '⏸' : '▶'}</button>
+            <button onClick={() => jumpTo(Math.min(sim?.totalTime || 0, currentTime + 1 / 120))} className="text-cyan-400 hover:text-cyan-200 text-sm px-2">▶</button>
             <div className="flex gap-1 ml-4">
               {[0.1, 0.25, 0.5, 1, 2, 4].map(s => (
-                <button key={s}
-                  className={`px-2 py-0.5 text-xs rounded ${playbackSpeed === s ? 'bg-amber-700 text-white' : 'bg-cyan-900/50 text-cyan-400 hover:bg-cyan-800'}`}
-                  onClick={() => { setPlaybackSpeed(s); playbackSpeedRef.current = s; }}>
-                  {s}×
-                </button>
+                <button key={s} className={`px-2 py-0.5 text-xs rounded ${playbackSpeed === s ? 'bg-amber-700 text-white' : 'bg-cyan-900/50 text-cyan-400 hover:bg-cyan-800'}`}
+                  onClick={() => { setPlaybackSpeed(s); playbackSpeedRef.current = s; }}>{s}×</button>
               ))}
             </div>
             <span className="text-amber-400 text-sm font-mono ml-4">{timeStr}</span>
@@ -518,38 +534,31 @@ export default function App() {
 
         {/* Narrative */}
         <div className="absolute bottom-28 left-1/2 -translate-x-1/2 max-w-xl text-center">
-          <p className="text-cyan-300/80 text-xs italic px-4 py-1"
-            style={{ background: 'rgba(0,10,20,0.7)', borderRadius: '4px' }}>
-            {narrative}
-          </p>
+          <p className="text-cyan-300/80 text-xs italic px-4 py-1" style={{ background: 'rgba(0,10,20,0.7)', borderRadius: '4px' }}>{narrative}</p>
         </div>
 
         {/* Toast */}
-        {toast && (
-          <div className="absolute top-16 left-1/2 -translate-x-1/2 bg-cyan-900/90 text-cyan-200 text-sm px-4 py-2 rounded border border-cyan-500/50">
-            {toast}
-          </div>
-        )}
+        {toast && <div className="absolute top-20 left-1/2 -translate-x-1/2 bg-cyan-900/90 text-cyan-200 text-sm px-4 py-2 rounded border border-cyan-500/50">{toast}</div>}
 
-        {/* Fading hint overlay */}
+        {/* Hint */}
         {showHint && (
-          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-cyan-300/70 text-sm text-center px-6 py-3 rounded-lg transition-opacity duration-1000"
+          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-cyan-300/70 text-sm text-center px-6 py-3 rounded-lg"
             style={{ background: 'rgba(0,20,30,0.8)', border: '1px solid rgba(0,255,200,0.3)', animation: 'fadeOut 6s forwards' }}>
             {t('hint', lang)}
           </div>
         )}
-      </div>
 
-      {/* Language Switch + GPX Load — pointer-events:auto */}
-      <div className="absolute top-2 right-2 flex gap-2" style={{ zIndex: 20 }}>
-        <button onClick={() => setLang(l => l === 'en' ? 'ru' : 'en')}
-          className="bg-cyan-900/80 hover:bg-cyan-800 text-cyan-300 text-xs px-2 py-1 rounded border border-cyan-700 cursor-pointer">
-          {lang === 'en' ? 'RU' : 'EN'}
-        </button>
-        <button onClick={handleLoadGpx}
-          className="bg-cyan-900/80 hover:bg-cyan-800 text-cyan-300 text-xs px-2 py-1 rounded border border-cyan-700 cursor-pointer">
-          {t('loadGpx', lang)}
-        </button>
+        {/* About */}
+        {showAbout && (
+          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-cyan-950/95 border border-cyan-500/50 rounded-lg p-6 max-w-md text-cyan-200 text-sm"
+            style={{ pointerEvents: 'auto' }}>
+            <h3 className="text-cyan-400 font-bold mb-2">{t('about', lang)}</h3>
+            <p className="mb-3">{t('aboutText', lang)}</p>
+            <p className="text-xs text-cyan-500 mb-2">Photos: Karussell.jpg, Nordschleife_Brünnchen.jpg, Nürburgring_Flugplatz.jpg, Nürburgring_Bergwerk.jpg, Döttinger_Höhe.jpg, Nürburgring_start-finish.jpg</p>
+            <p className="text-xs text-cyan-500">Licenses: CC BY-SA 3.0 / Public Domain (Wikimedia Commons)</p>
+            <button onClick={() => setShowAbout(false)} className="mt-3 px-3 py-1 bg-cyan-800 hover:bg-cyan-700 rounded text-xs">OK</button>
+          </div>
+        )}
       </div>
     </div>
   );

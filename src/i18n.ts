@@ -28,7 +28,7 @@ export const dict = {
   bodyRoll: { en: 'Roll & pitch', ru: 'Крен и клев' },
   play: { en: 'Play', ru: 'Пуск' },
   pause: { en: 'Pause', ru: 'Пауза' },
-  loadGpx: { en: 'Load GPX', ru: 'Загрузить GPX' },
+  loadGpx: { en: 'GPX track', ru: 'GPX трек' },
   gpxLoaded: { en: 'GPX loaded: {n} points, {len} km', ru: 'GPX загружен: {n} точек, {len} км' },
   roll: { en: 'Roll', ru: 'Крен' },
   pitch: { en: 'Pitch', ru: 'Тангаж' },
@@ -48,11 +48,27 @@ export const dict = {
   crest: { en: 'crest unloads suspension', ru: 'перегруз разгружает подвеску' },
   accelerating: { en: 'full throttle acceleration', ru: 'полный газ, разгон' },
   coasting: { en: 'coasting through corner', ru: 'прохождение поворота' },
+  // New strings for polish pass
+  racingLine: { en: 'Racing line', ru: 'Гоночная траектория' },
+  photoPlates: { en: 'Photo plates', ru: 'Фото-таблички' },
+  elevationTint: { en: 'Elevation tint', ru: 'Тон по высоте' },
+  minimap: { en: 'Minimap', ru: 'Мини-карта' },
+  signMode: { en: 'Signs', ru: 'Таблички' },
+  signNearest: { en: 'Nearest', ru: 'Ближайшие' },
+  signAll: { en: 'All', ru: 'Все' },
+  signSelected: { en: 'Selected', ru: 'Выбранные' },
+  recenter: { en: 'Recenter', ru: 'Центрировать' },
+  about: { en: 'About', ru: 'О программе' },
+  aboutText: {
+    en: 'Photos from Wikimedia Commons (CC BY-SA / Public Domain). Track data: stylized Nürburgring Nordschleife.',
+    ru: 'Фото из Wikimedia Commons (CC BY-SA / Public Domain). Данные трассы: стилизованная Нюрбургринг Нордшляйфе.'
+  },
+  elevationLegend: { en: 'Elevation: 320m → 617m', ru: 'Высота: 320м → 617м' },
 };
 
 export type DictKey = keyof typeof dict;
 
-export function t(key: 'title' | 'lap' | 'speed' | 'gear' | 'corner' | 'camera' | 'cameraHints' | 'massOverlay' | 'wheelLoads' | 'cogSphere' | 'bodyRoll' | 'play' | 'pause' | 'loadGpx' | 'roll' | 'pitch' | 'hint', lang: Lang): string {
+export function t(key: 'title' | 'lap' | 'speed' | 'gear' | 'corner' | 'camera' | 'cameraHints' | 'massOverlay' | 'wheelLoads' | 'cogSphere' | 'bodyRoll' | 'play' | 'pause' | 'loadGpx' | 'roll' | 'pitch' | 'hint' | 'racingLine' | 'photoPlates' | 'elevationTint' | 'minimap' | 'signMode' | 'signNearest' | 'signAll' | 'signSelected' | 'recenter' | 'about' | 'aboutText' | 'elevationLegend', lang: Lang): string {
   const val = dict[key];
   if (typeof val === 'string') return val;
   return '';
@@ -65,4 +81,18 @@ export function tNarrative(lang: Lang, name: string, brake: string, load: string
 export function tTooltip(num: number, lang: Lang): string {
   const entry = dict.cameraTooltips[num as keyof typeof dict.cameraTooltips];
   return entry ? entry[lang] : '';
+}
+
+// Language persistence
+export function loadLang(): Lang {
+  const hash = window.location.hash.replace('#', '');
+  if (hash === 'ru' || hash === 'en') return hash;
+  const stored = localStorage.getItem('nsl_lang');
+  if (stored === 'ru' || stored === 'en') return stored;
+  return 'en';
+}
+
+export function saveLang(lang: Lang) {
+  localStorage.setItem('nsl_lang', lang);
+  window.location.hash = lang;
 }

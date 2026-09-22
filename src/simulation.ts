@@ -1,7 +1,7 @@
 // ============================================================
 // SECTION: Deterministic Precomputed Simulation
 // Renault Clio R.S. III: 1240kg, CoG 0.50m, 61/39 F/R, FWD, ~148kW
-// Target: lap time 8:30–9:30, top speed ~220-235 km/h on Döttinger Höhe
+// Uses racing-line curvature for target speeds
 // ============================================================
 import { TrackData } from './track';
 
@@ -31,21 +31,19 @@ export interface SimData {
   pitchAngle: Float32Array;
 }
 
-// Car parameters — Renault Clio R.S. III
 const MASS = 1240;
 const COG_H = 0.50;
 const WHEELBASE = 2.59;
 const TRACK_W = 1.53;
 const FRONT_BIAS = 0.61;
 const G = 9.81;
-const MU = 1.25;             // dry grip coefficient
-const MAX_BRAKE_G = 1.15;    // max braking decel in g
-const DRAG_CD_A = 0.80;      // Cd*A (Clio RS3: Cd~0.33, A~2.4)
+const MU = 1.25;
+const MAX_BRAKE_G = 1.15;
+const DRAG_CD_A = 0.80;
 const RHO = 1.225;
 const ROLL_RESIST = 0.015;
-const MAX_POWER = 148000;     // 148 kW
+const MAX_POWER = 148000;
 
-// Gear ratios (including final drive)
 const GEAR_RATIOS = [0, 11.8, 7.7, 5.4, 4.1, 3.4, 2.8];
 const WHEEL_R = 0.31;
 
@@ -53,9 +51,7 @@ function effectiveRatio(gear: number): number {
   return GEAR_RATIOS[gear] / WHEEL_R;
 }
 
-// Engine torque curve (Nm at flywheel)
 function engineTorque(rpm: number): number {
-  // Peak ~240 Nm around 4000 rpm, drops off
   const norm = rpm / 7000;
   if (norm < 0.15) return 180 * (norm / 0.15);
   if (norm < 0.65) return 240;
@@ -71,9 +67,8 @@ export function runSimulation(track: TrackData): SimData {
   const DT = 1 / 120;
   const N = track.numSamples;
   const totalArcLen = track.totalLength;
-  const MAX_FRAMES = 80000; // ~11 min max
+  const MAX_FRAMES = 80000;
 
-  // Allocate typed arrays
   const t = new Float32Array(MAX_FRAMES);
   const s = new Float32Array(MAX_FRAMES);
   const posX = new Float32Array(MAX_FRAMES);
@@ -95,7 +90,10 @@ export function runSimulation(track: TrackData): SimData {
   const rollAngle = new Float32Array(MAX_FRAMES);
   const pitchAngle = new Float32Array(MAX_FRAMES);
 
-  // Sample track at arc-length position
+  // Use racing line curvature for target speeds
+  const useRacing = track.racingCurvatures && track.racingCurvatures.length > 0;
+  const curvatures = useRacing ? track.racingCurvatures : track.curvatures;
+
   function sampleTrack(arcPos: number) {
     const wrappedPos = ((arcPos % totalArcLen) + totalArcLen) % totalArcLen;
     const frac = wrappedPos / totalArcLen;
@@ -109,26 +107,25 @@ export function runSimulation(track: TrackData): SimData {
     const tx = track.tangents[idx * 3] * (1 - blend) + track.tangents[nextIdx * 3] * blend;
     const ty = track.tangents[idx * 3 + 1] * (1 - blend) + track.tangents[nextIdx * 3 + 1] * blend;
     const tz = track.tangents[idx * 3 + 2] * (1 - blend) + track.tangents[nextIdx * 3 + 2] * blend;
-    const curv = track.curvatures[idx] * (1 - blend) + track.curvatures[nextIdx] * blend;
+    const curv = curvatures[idx] * (1 - blend) + curvatures[nextIdx] * blend;
 
     return { px, py, pz, tx, ty, tz, curv, idx };
   }
 
-  // Target corner speed: v = sqrt(mu * g * r) with safety margin
+  // Target speed from racing-line curvature
   function cornerTargetSpeed(curv: number): number {
-    if (curv < 0.003) return 66; // straight: power-limited ~238 km/h
+    if (curv < 0.004) return 65; // straight: power-limited ~234 km/h
     const radius = 1 / curv;
-    // v = sqrt(mu * g * r), with 0.88 safety factor for real-world
-    const v = Math.sqrt(MU * G * radius) * 0.88;
-    return Math.min(v, 66); // cap at power-limited top speed
+    const v = Math.sqrt(MU * G * radius) * 0.90;
+    return Math.min(v, 65);
   }
 
-  // Look ahead to find required braking
+  // Look-ahead with braking distance window
   function lookAheadTarget(currentS: number, currentV: number): number {
-    let minTarget = 66; // max straight speed
-    // Look ahead based on current speed (how far we need to see)
-    const lookDist = Math.max(300, currentV * currentV / (2 * MAX_BRAKE_G * G) * 1.5);
-    const steps = 60;
+    let minTarget = 65;
+    const brakeDist = currentV * currentV / (2 * MAX_BRAKE_G * G);
+    const lookDist = Math.max(250, brakeDist * 1.4);
+    const steps = 50;
     const stepSize = lookDist / steps;
 
     for (let i = 1; i <= steps; i++) {
@@ -142,7 +139,7 @@ export function runSimulation(track: TrackData): SimData {
 
   // Main simulation
   let currentS = 0;
-  let currentV = 25; // start at ~90 km/h (rolling start)
+  let currentV = 25;
   let currentGear = 3;
   let currentRpm = 3500;
   let actualFrames = 0;
@@ -152,28 +149,30 @@ export function runSimulation(track: TrackData): SimData {
     const time = frame * DT;
     const sample = sampleTrack(currentS);
 
-    // Road slope
     const slopeAngle = Math.atan2(sample.ty, Math.sqrt(sample.tx * sample.tx + sample.tz * sample.tz));
     const gravityForce = -MASS * G * Math.sin(slopeAngle);
 
-    // Look ahead for target speed
     const targetV = lookAheadTarget(currentS, currentV);
 
-    // Decide throttle/brake
     let thr = 0;
     let brk = 0;
 
+    // Trail-brake entry: blend brake and turn-in
     if (currentV > targetV + 0.5) {
-      // Need to brake — intensity based on how much we need to slow
       const vDiff = currentV - targetV;
+      // Trail-brake: reduce brake as we approach target, allowing some lateral grip
       brk = Math.min(1, vDiff / 8);
+      // Trail-brake shaping: less brake when close to target speed
+      if (vDiff < 3) brk *= 0.5;
       thr = 0;
     } else if (currentV < targetV - 1) {
-      // Can accelerate — full throttle when well below target
-      thr = Math.min(1, (targetV - currentV) / 8);
+      // Early-throttle exit: start applying throttle before reaching target
+      const headroom = targetV - currentV;
+      thr = Math.min(1, headroom / 6);
+      // Early throttle shaping: more throttle when well below target
+      if (headroom > 10) thr = 1;
       brk = 0;
     } else {
-      // Near target — light throttle to maintain
       thr = 0.15;
       brk = 0;
     }
@@ -187,7 +186,6 @@ export function runSimulation(track: TrackData): SimData {
       currentRpm *= 1.5;
     }
 
-    // Engine force
     const effRatio = effectiveRatio(currentGear);
     currentRpm = Math.max(IDLE_RPM, Math.min(MAX_RPM, Math.abs(currentV) * effRatio * 30 / Math.PI));
 
@@ -195,9 +193,9 @@ export function runSimulation(track: TrackData): SimData {
     if (thr > 0) {
       const torque = engineTorque(currentRpm);
       engineForce = torque * effRatio * thr;
-      // Limit max traction force (FWD, weight transfer limits rear grip for acceleration)
-      const maxTractionForce = MASS * G * 0.5; // ~0.5g max accel at low speed
-      engineForce = Math.min(engineForce, maxTractionForce);
+      // Traction limit (FWD)
+      const maxTraction = MASS * G * 0.5;
+      engineForce = Math.min(engineForce, maxTraction);
       // Power limit
       const power = engineForce * Math.max(currentV, 1);
       if (power > MAX_POWER) {
@@ -205,42 +203,31 @@ export function runSimulation(track: TrackData): SimData {
       }
     }
 
-    // Braking force
     const brakeForce = brk * MAX_BRAKE_G * G * MASS;
-
-    // Drag + rolling resistance
     const dragForce = 0.5 * DRAG_CD_A * RHO * currentV * currentV;
     const rollingResist = ROLL_RESIST * MASS * G;
 
-    // Net force
     const netForce = engineForce - brakeForce - dragForce - rollingResist + gravityForce;
     const accel = netForce / MASS;
 
-    // Crest effect
     const crestFactor = Math.max(0.3, 1 - sample.curv * currentV * currentV / G);
 
-    // Update speed
     currentV = Math.max(0, currentV + accel * DT);
-
-    // Lateral acceleration
     const latAccel = currentV * currentV * sample.curv;
 
-    // Update position
     currentS += currentV * DT;
 
-    // Lap detection
     if (currentS > totalArcLen * 0.3) lapStarted = true;
     if (lapStarted && currentS >= totalArcLen) {
       currentS = currentS % totalArcLen;
       actualFrames = frame + 1;
       break;
     }
-    if (time > 780) { // 13 min safety
+    if (time > 780) {
       actualFrames = frame + 1;
       break;
     }
 
-    // Get position
     const newSample = sampleTrack(currentS);
 
     // Wheel loads
@@ -257,16 +244,13 @@ export function runSimulation(track: TrackData): SimData {
     const rl = Math.max(0, rearTotal / 2 - latTransfer * 0.4);
     const rr = Math.max(0, rearTotal / 2 + latTransfer * 0.4);
 
-    // Body roll/pitch
     const rollStiffness = 28000;
     const rollAng = (latAccel * MASS * COG_H) / rollStiffness * (180 / Math.PI);
     const pitchStiffness = 38000;
     const pitchAng = (accel * MASS * COG_H) / pitchStiffness * (180 / Math.PI);
 
-    // Heading
     const head = Math.atan2(newSample.tx, newSample.tz);
 
-    // Store
     t[frame] = time;
     s[frame] = currentS;
     posX[frame] = newSample.px;
@@ -291,31 +275,20 @@ export function runSimulation(track: TrackData): SimData {
     actualFrames = frame + 1;
   }
 
-  // Log calibration
   const lapTime = (actualFrames - 1) * DT;
   let maxSpeed = 0;
-  let maxSpeedIdx = 0;
-  let bergwerkSpeed = 0;
+  let maxSpeedS = 0;
   for (let i = 0; i < actualFrames; i++) {
-    if (speed[i] > maxSpeed) { maxSpeed = speed[i]; maxSpeedIdx = i; }
-    // Find Bergwerk (corner 13, fraction ≈ 12/27)
-    const bergwerkFrac = 12 / 27;
-    if (Math.abs(s[i] - bergwerkFrac * totalArcLen) < 50 && speed[i] < bergwerkSpeed + 5) {
-      bergwerkSpeed = speed[i];
-    }
+    if (speed[i] > maxSpeed) { maxSpeed = speed[i]; maxSpeedS = s[i]; }
   }
 
   console.log(`[Sim] Lap time: ${Math.floor(lapTime / 60)}:${(lapTime % 60).toFixed(2).padStart(5, '0')} (${lapTime.toFixed(1)}s)`);
-  console.log(`[Sim] Top speed: ${(maxSpeed * 3.6).toFixed(0)} km/h at s=${(s[maxSpeedIdx]/1000).toFixed(1)}km`);
-  console.log(`[Sim] Frames: ${actualFrames}, avg speed: ${(totalArcLen / lapTime * 3.6).toFixed(0)} km/h`);
+  console.log(`[Sim] Top speed: ${(maxSpeed * 3.6).toFixed(0)} km/h at s=${(maxSpeedS / 1000).toFixed(1)}km`);
 
-  // Trim arrays
   const trim = (arr: Float32Array) => arr.slice(0, actualFrames);
 
   return {
-    numFrames: actualFrames,
-    dt: DT,
-    totalTime: lapTime,
+    numFrames: actualFrames, dt: DT, totalTime: lapTime,
     t: trim(t), s: trim(s),
     posX: trim(posX), posY: trim(posY), posZ: trim(posZ),
     heading: trim(heading), pitch: trim(pitch),
@@ -328,7 +301,6 @@ export function runSimulation(track: TrackData): SimData {
   };
 }
 
-// Interpolate simulation data at given time
 export function interpSim(sim: SimData, time: number) {
   const clampedTime = Math.max(0, Math.min(time, sim.totalTime));
   const frameF = clampedTime / sim.dt;
