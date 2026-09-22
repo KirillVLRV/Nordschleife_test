@@ -821,7 +821,8 @@ function updateCamera(state: SceneState, data: ReturnType<typeof interpSim>) {
       const behind = _v2.set(-Math.sin(data.heading) * 15, 5, -Math.cos(data.heading) * 15).add(carPos);
       state.camera.position.lerp(behind, 0.1);
       state.camera.lookAt(carPos);
-      state.controls.target.copy(carPos);
+      state.controls.target.lerp(carPos, 0.15);
+      state.controls.update();
       break;
     }
     case 3: { // Hood
@@ -829,6 +830,8 @@ function updateCamera(state: SceneState, data: ReturnType<typeof interpSim>) {
       state.camera.position.copy(hood);
       const look = _v3.set(Math.sin(data.heading) * 100 + data.posX, data.posY + 1, Math.cos(data.heading) * 100 + data.posZ);
       state.camera.lookAt(look);
+      state.controls.target.lerp(carPos, 0.15);
+      state.controls.update();
       break;
     }
     case 4: { // Top-down

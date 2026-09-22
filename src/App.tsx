@@ -129,11 +129,10 @@ function TelemetryGraph({ sim, currentTime, onJumpTo }: { sim: SimData; currentT
 }
 
 // Car preview component (small canvas)
-function CarPreview({ car, selected, lang, onFindModel, onRotateModel, onLoadModel }: { 
+function CarPreview({ car, selected, lang, onRotateModel, onLoadModel }: { 
   car: CarConfig; 
   selected: boolean; 
   lang: Lang;
-  onFindModel: () => void;
   onRotateModel: (degrees: number) => void;
   onLoadModel: (file: File) => void;
 }) {
@@ -231,45 +230,34 @@ function CarPreview({ car, selected, lang, onFindModel, onRotateModel, onLoadMod
         </div>
       </div>
 
-      {/* Control buttons */}
-      <div className="flex gap-0.5 mt-1 justify-center">
-        {!car.customModelLoaded && (
+      {/* Control buttons - only show when custom model is loaded */}
+      {car.customModelLoaded && (
+        <div className="flex gap-0.5 mt-1 justify-center">
           <button 
-            onClick={(e) => { e.stopPropagation(); onFindModel(); }}
+            onClick={(e) => { e.stopPropagation(); onRotateModel(-90); }}
             className="text-[9px] px-1 py-0.5 bg-cyan-900/60 hover:bg-cyan-800 text-cyan-400 rounded cursor-pointer"
-            title={t('findModel', lang)}
+            title={`${t('rotateModel', lang)} -90°`}
           >
-            🔍
+            ↺
           </button>
-        )}
-        {car.customModelLoaded && (
-          <>
-            <button 
-              onClick={(e) => { e.stopPropagation(); onRotateModel(-90); }}
-              className="text-[9px] px-1 py-0.5 bg-cyan-900/60 hover:bg-cyan-800 text-cyan-400 rounded cursor-pointer"
-              title={`${t('rotateModel', lang)} -90°`}
-            >
-              ↺
-            </button>
-            <button 
-              onClick={(e) => { e.stopPropagation(); onRotateModel(90); }}
-              className="text-[9px] px-1 py-0.5 bg-cyan-900/60 hover:bg-cyan-800 text-cyan-400 rounded cursor-pointer"
-              title={`${t('rotateModel', lang)} +90°`}
-            >
-              ↻
-            </button>
-            <label className="text-[9px] px-1 py-0.5 bg-cyan-900/60 hover:bg-cyan-800 text-cyan-400 rounded cursor-pointer">
-              📁
-              <input 
-                type="file" 
-                accept=".glb,.gltf" 
-                onChange={handleFileInput}
-                className="hidden"
-              />
-            </label>
-          </>
-        )}
-      </div>
+          <button 
+            onClick={(e) => { e.stopPropagation(); onRotateModel(90); }}
+            className="text-[9px] px-1 py-0.5 bg-cyan-900/60 hover:bg-cyan-800 text-cyan-400 rounded cursor-pointer"
+            title={`${t('rotateModel', lang)} +90°`}
+          >
+            ↻
+          </button>
+          <label className="text-[9px] px-1 py-0.5 bg-cyan-900/60 hover:bg-cyan-800 text-cyan-400 rounded cursor-pointer">
+            📁
+            <input 
+              type="file" 
+              accept=".glb,.gltf" 
+              onChange={handleFileInput}
+              className="hidden"
+            />
+          </label>
+        </div>
+      )}
 
       {/* Model info form */}
       {showModelForm && (
@@ -355,20 +343,7 @@ export default function App() {
 
   useEffect(() => { const t = setTimeout(() => setShowHint(false), 6000); return () => clearTimeout(t); }, []);
 
-  // Initialize sound on first user interaction
-  useEffect(() => {
-    const initSound = () => {
-      soundSystem['init']();
-      window.removeEventListener('click', initSound);
-      window.removeEventListener('keydown', initSound);
-    };
-    window.addEventListener('click', initSound);
-    window.addEventListener('keydown', initSound);
-    return () => {
-      window.removeEventListener('click', initSound);
-      window.removeEventListener('keydown', initSound);
-    };
-  }, []);
+  // Sound is OFF by default - only initialized when user drops audio file
 
   // Handle mute
   useEffect(() => {
@@ -517,6 +492,39 @@ export default function App() {
     if (stateRef.current) { updateScene(stateRef.current, tv); stateRef.current.renderer.render(stateRef.current.scene, stateRef.current.camera); }
   }, []);
 
+  // GPX file loader
+  const handleLoadGpx = useCallback(() => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.gpx';
+    input.onchange = async (e) => {
+      const file = (e.target as HTMLInputElement).files?.[0];
+      if (!file || !trackRef.current) return;
+      try {
+        const text = await file.text();
+        const { track: newTrack, pointCount, lengthKm } = parseGpx(text, trackRef.current);
+        const newSim = runSimulation(newTrack, carConfigs[selectedCarIdx]);
+        setTrack(newTrack);
+        trackRef.current = newTrack;
+        setSim(newSim);
+        simRef.current = newSim;
+        currentTimeRef.current = 0;
+        setCurrentTime(0);
+        if (stateRef.current && containerRef.current) {
+          stateRef.current.renderer.dispose();
+          containerRef.current.innerHTML = '';
+          stateRef.current = initScene(containerRef.current, newTrack, newSim);
+        }
+        setToast(`${lang === 'en' ? 'GPX loaded' : 'GPX загружен'}: ${pointCount} pts, ${lengthKm.toFixed(1)} km`);
+        setTimeout(() => setToast(''), 3000);
+      } catch (err) {
+        setToast(`${lang === 'en' ? 'GPX error' : 'Ошибка GPX'}: ${err}`);
+        setTimeout(() => setToast(''), 3000);
+      }
+    };
+    input.click();
+  }, [carConfigs, selectedCarIdx, lang]);
+
   const currentCar = carConfigs[selectedCarIdx];
   const data = sim ? interpSim(sim, currentTime) : null;
 
@@ -578,9 +586,57 @@ export default function App() {
 
         {/* Top-right pills */}
         <div className="absolute top-14 right-2 flex gap-1.5" style={{ pointerEvents: 'auto' }}>
-          <button onClick={() => setLang(lang === 'en' ? 'ru' : 'en')} className={`${pillBtn} bg-cyan-900/80 hover:bg-cyan-800 text-cyan-300`}>
-            {lang === 'en' ? 'RU' : 'EN'}
+          {/* Language segmented control */}
+          <div className="flex rounded border border-cyan-700 overflow-hidden">
+            <button 
+              onClick={() => setLang('ru')}
+              className={`px-3 py-1.5 text-xs ${lang === 'ru' ? 'bg-cyan-700 text-white' : 'bg-cyan-900/80 text-cyan-300 hover:bg-cyan-800'}`}
+            >
+              RU
+            </button>
+            <button 
+              onClick={() => setLang('en')}
+              className={`px-3 py-1.5 text-xs ${lang === 'en' ? 'bg-cyan-700 text-white' : 'bg-cyan-900/80 text-cyan-300 hover:bg-cyan-800'}`}
+            >
+              EN
+            </button>
+          </div>
+          {/* GPX pill */}
+          <button 
+            onClick={handleLoadGpx}
+            className={`${pillBtn} bg-cyan-900/80 hover:bg-cyan-800 text-cyan-300`}
+          >
+            GPX
           </button>
+        </div>
+
+        {/* Left Panel: Corner List */}
+        <div className="absolute left-2 top-24 bottom-36 w-56 overflow-y-auto"
+          style={{ pointerEvents: 'auto', background: 'rgba(0,15,25,0.88)', border: '1px solid rgba(0,255,200,0.15)', borderRadius: '4px' }}>
+          <div className="p-2 border-b border-cyan-900 text-cyan-400 text-xs font-bold">
+            {lang === 'en' ? 'Corners' : 'Повороты'}
+          </div>
+          <div className="p-1">
+            {CORNER_SPECS.map((spec, idx) => (
+              <button
+                key={idx}
+                onClick={() => {
+                  if (!sim) return;
+                  const cornerTime = (idx / (CORNER_SPECS.length - 1)) * sim.totalTime;
+                  jumpTo(cornerTime);
+                }}
+                className={`w-full text-left px-2 py-1 text-xs rounded transition-colors ${
+                  currentCorner === spec.name 
+                    ? 'bg-amber-900/50 text-amber-200' 
+                    : 'text-cyan-400 hover:bg-cyan-900/30'
+                }`}
+              >
+                <span className="text-amber-500 mr-1">{idx + 1}.</span>
+                <span className="mr-1">{getCornerIcon(spec.character)}</span>
+                {lang === 'en' ? spec.name : spec.name}
+              </button>
+            ))}
+          </div>
         </div>
 
         {/* Right Panel: Garage + Sliders */}
@@ -594,10 +650,6 @@ export default function App() {
                   car={car} 
                   selected={idx === selectedCarIdx} 
                   lang={lang}
-                  onFindModel={() => {
-                    const url = SKETCHFAB_SEARCH_URLS[car.id];
-                    if (url) window.open(url, '_blank');
-                  }}
                   onRotateModel={(degrees) => {
                     const newRotation = ((car.modelRotation || 0) + degrees + 360) % 360;
                     setCarConfigs(prev => {
@@ -650,9 +702,9 @@ export default function App() {
           <div className="p-2 border-t border-cyan-900">
             <div className="text-cyan-400 text-xs font-bold mb-2">{lang === 'en' ? 'Parameters' : 'Параметры'}</div>
             {[
-              { key: 'massMultiplier', label: lang === 'en' ? 'Mass' : 'Масса', min: 0.7, max: 1.3, step: 0.05, format: (v: number) => `${(v * 100).toFixed(0)}%` },
-              { key: 'cogHeightOffset', label: lang === 'en' ? 'CoG Height' : 'Высота ЦМ', min: -0.1, max: 0.1, step: 0.01, format: (v: number) => `${(v * 100).toFixed(0)}cm` },
-              { key: 'powerMultiplier', label: lang === 'en' ? 'Power' : 'Мощность', min: 0.6, max: 1.4, step: 0.05, format: (v: number) => `${(v * 100).toFixed(0)}%` },
+              { key: 'massMultiplier', label: lang === 'en' ? 'Mass' : 'Масса', min: 0.7, max: 1.3, step: 0.05, format: (v: number) => `${(currentCar.mass * v).toFixed(0)} kg` },
+              { key: 'cogHeightOffset', label: lang === 'en' ? 'CoG Height' : 'Высота ЦМ', min: -0.1, max: 0.1, step: 0.01, format: (v: number) => `${((currentCar.cogHeight + v) * 100).toFixed(0)} cm` },
+              { key: 'powerMultiplier', label: lang === 'en' ? 'Power' : 'Мощность', min: 0.6, max: 1.4, step: 0.05, format: (v: number) => `${(currentCar.power * v).toFixed(0)} kW` },
               { key: 'gripMu', label: lang === 'en' ? 'Grip μ' : 'Сцепление μ', min: 0.6, max: 1.6, step: 0.05, format: (v: number) => v.toFixed(2) },
               { key: 'driverSkill', label: lang === 'en' ? 'Driver Skill' : 'Мастерство', min: 0.7, max: 1.0, step: 0.02, format: (v: number) => `${(v * 100).toFixed(0)}%` },
             ].map(slider => (
@@ -727,6 +779,11 @@ export default function App() {
             {t('hint', lang)}
           </div>
         )}
+
+        {/* Build badge */}
+        <div className="absolute bottom-2 right-2 text-[10px] text-cyan-600/40 pointer-events-none select-none">
+          build 2.2r2
+        </div>
       </div>
     </div>
   );

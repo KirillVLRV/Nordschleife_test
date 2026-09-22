@@ -230,6 +230,17 @@ export function runSimulation(track: TrackData, car: CarConfig): SimData {
     const crestFactor = Math.max(0.3, 1 - sample.curv * currentV * currentV / G);
 
     currentV = Math.max(0, currentV + accel * DT);
+    
+    // NaN guard: revert to last valid speed if NaN detected
+    if (isNaN(currentV) || !isFinite(currentV)) {
+      currentV = frame > 0 ? speed[frame - 1] : 6.94; // 25 km/h fallback
+    }
+    
+    // Ensure minimum speed after t>5s to prevent zero-speed segments
+    if (time > 5 && currentV < 6.94) { // 6.94 m/s = 25 km/h
+      currentV = 6.94;
+    }
+    
     const latAccel = currentV * currentV * sample.curv;
 
     currentS += currentV * DT;
